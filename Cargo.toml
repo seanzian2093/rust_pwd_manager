@@ -1,0 +1,13 @@
+[package]
+name = "pwd_manager"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chacha20poly1305 = { version = "0.11.0-rc.2" }
+base64 = "0.22.1"
+hex = "0.4.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+tempfile = "3.23.0"
+clap = { version = "4.5", features = ["derive"] }
