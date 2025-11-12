@@ -106,4 +106,30 @@ pub enum Commands {
         #[arg(short = 'i', long = "input", value_name = "FILE", default_value = "data/output/credentials.json")]
         input: String,
     },
+
+    /// Delete a credential by account name
+    Delete {
+        account: String,
+        #[arg(short = 'i', long = "input", value_name = "FILE", default_value = "data/output/credentials.json")]
+        input: String,
+    },
+
+    /// Update credential fields; unspecified fields remain unchanged
+    Update {
+        account: String,
+        #[arg(short = 'u', long = "user-name")]
+        user_name: Option<String>,
+        #[arg(short, long)]
+        password: Option<String>,
+        #[arg(long = "sec", value_parser = parse_security_question, value_name = "QUESTION=ANSWER")]
+        security_questions: Vec<SecurityQuestion>,
+        #[arg(long = "sub", value_parser = parse_sub_credential, value_name = "NAME=PASSWORD")]
+        sub_credentials: Vec<SubCredential>,
+        #[arg(short = 'i', long = "input", value_name = "FILE", default_value = "data/output/credentials.json")]
+        input: String,
+        #[arg(long = "key-file", value_name = "PATH", default_value = "data/input/key.txt")]
+        key_file: String,
+        #[arg(long = "nonce-file", value_name = "PATH", default_value = "data/input/nonce.txt")]
+        nonce_file: String,
+    }
 }

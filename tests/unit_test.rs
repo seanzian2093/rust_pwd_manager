@@ -104,7 +104,7 @@ fn test_encrypt_cred() -> MyResult {
 
 #[test]
 fn test_decrypt_cred() -> MyResult {
-    let c_cred = read_from_json("data/output/credentials.json")?;
+    let c_cred = _read_from_json("data/output/credentials.json")?;
     let key = load_or_create_key_b64()?;
     let nonce = load_or_create_nonce_b64()?;
 
@@ -136,7 +136,7 @@ fn test_write_to_json() -> MyResult {
 
     let cred = sample_credential2();
     let c_cred = encrypt_cred(&key, &nonce, &cred)?;
-    write_to_json(c_cred, "data/output/credentials.json")?;
+    _write_to_json(c_cred, "data/output/credentials.json")?;
     Ok(())
 }
 
@@ -144,7 +144,7 @@ fn test_write_to_json() -> MyResult {
 #[test]
 #[ignore]
 fn test_read_from_json() -> MyResult {
-    let credential = read_from_json("data/output/credentials.json")?;
+    let credential = _read_from_json("data/output/credentials.json")?;
     assert_eq!(credential.account_name, "RustRover");
     Ok(())
 }
@@ -152,7 +152,7 @@ fn test_read_from_json() -> MyResult {
 #[test]
 fn test_write_to_json_independent() -> MyResult {
     let tmp = tempfile::NamedTempFile::new()?;
-    write_to_json(sample_credential(), tmp.path().to_str().unwrap())?;
+    _write_to_json(sample_credential(), tmp.path().to_str().unwrap())?;
     Ok(())
 }
 
@@ -160,8 +160,8 @@ fn test_write_to_json_independent() -> MyResult {
 fn test_read_from_json_independent() -> MyResult {
     let tmp = tempfile::NamedTempFile::new()?;
     let path = tmp.path().to_str().unwrap();
-    write_to_json(sample_credential(), path)?;
-    let cred = read_from_json(path)?;
+    _write_to_json(sample_credential(), path)?;
+    let cred = _read_from_json(path)?;
     assert_eq!(cred.account_name, "RustRover");
     Ok(())
 }

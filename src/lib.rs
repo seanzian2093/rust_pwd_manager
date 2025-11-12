@@ -8,6 +8,7 @@ use std::{
     path::Path,
     // for .mode(0o600)
     os::unix::fs::OpenOptionsExt,
+    collections::BTreeMap,
 };
 use serde::{Deserialize, Serialize};
 
@@ -269,14 +270,13 @@ pub fn load_or_create_nonce_b64() -> Result<XNonce, UpstreamError> {
 pub fn encrypt_text(key: &Key, nonce: &XNonce, plaintext: &[u8]) -> Result<String, UpstreamError> {
     let cipher = XChaCha20Poly1305::new(&key);
     let ciphertext = cipher.encrypt(&nonce, plaintext)?;
+    let ciphertext_b64= general_purpose::STANDARD.encode(&ciphertext);
 
-    let b64_s= general_purpose::STANDARD.encode(&ciphertext);
-    Ok(b64_s)
-
+    Ok(ciphertext_b64)
 }
 
-pub fn decrypt_text(key: &Key, nonce: &XNonce, hex_s: &str) -> Result<String, UpstreamError> {
-    let ciphertext = general_purpose::STANDARD.decode(hex_s)
+pub fn decrypt_text(key: &Key, nonce: &XNonce, b64_s: &str) -> Result<String, UpstreamError> {
+    let ciphertext = general_purpose::STANDARD.decode(b64_s)
         .map_err(|e| UpstreamError::Other(format!("B64 decode error: {}", e)))?;
 
     let cipher = XChaCha20Poly1305::new(&key);
@@ -370,7 +370,43 @@ pub fn decrypt_cred(key: &Key, nonce: &XNonce, cred: &Credential) -> Result<Cred
     })
 }
 
-pub fn read_from_json<P: AsRef<Path>>(path: P) -> Result<Credential, UpstreamError> {
+
+fn norm_key(s: &str) -> String { s.to_ascii_lowercase() }
+
+fn read_map_from_json<P: AsRef<Path>>(path: P) -> Result<BTreeMap<String, Credential>, UpstreamError> {
+    match fs::File::open(&path) {
+        Ok(file) => {
+            let reader = io::BufReader::new(file);
+            let map = serde_json::from_reader::<_, BTreeMap<String, Credential>>(reader)
+                .map_err(|e| UpstreamError::Other(format!("Error reading from file: {}", e)))?;
+            Ok(map)
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn write_map_to_json<P: AsRef<Path>>(creds: &BTreeMap<String, Credential>, path: P) -> Result<(), UpstreamError> {
+    if let Some(parent) = path.as_ref().parent() {
+        if !parent.as_os_str().is_empty() { // avoid "" on relative file in CWD
+            fs::create_dir_all(parent)?;
+        }
+    }
+
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+
+    let writer = io::BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, creds)
+        .map_err(|e| UpstreamError::Other(format!("Error writing to file: {}", e)))?;
+    Ok(())
+}
+
+pub fn _read_from_json<P: AsRef<Path>>(path: P) -> Result<Credential, UpstreamError> {
     let file = fs::File::open(path)?;
     let reader = io::BufReader::new(file);
     let cred: Credential = serde_json::from_reader(reader)
@@ -379,18 +415,21 @@ pub fn read_from_json<P: AsRef<Path>>(path: P) -> Result<Credential, UpstreamErr
     Ok(cred)
 }
 
-pub fn write_to_json<T: Serialize, P: AsRef<Path>>(obj: T, path: P) -> Result<(), UpstreamError> {
-    let parent_path = path.as_ref().parent().expect("Unable to get parent path");
-    fs::create_dir_all(parent_path)?;
+pub fn _write_to_json<T: Serialize, P: AsRef<Path>>(obj: T, path: P) -> Result<(), UpstreamError> {
+    if let Some(parent) = path.as_ref().parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+
     let file = fs::File::create(path)?;
     let writer = io::BufWriter::new(file);
     serde_json::to_writer_pretty(writer, &obj)
         .map_err(|e| UpstreamError::Other(format!("{}", e)))?;
-
     Ok(())
 }
 
-fn read_vec_from_json<P: AsRef<Path>>(path: P) -> Result<Vec<Credential>, UpstreamError> {
+fn _read_vec_from_json<P: AsRef<Path>>(path: P) -> Result<Vec<Credential>, UpstreamError> {
     match fs::File::open(&path) {
         Ok(file) => {
             let reader = io::BufReader::new(file);
@@ -403,7 +442,7 @@ fn read_vec_from_json<P: AsRef<Path>>(path: P) -> Result<Vec<Credential>, Upstre
     }
 }
 
-fn write_vec_to_json<P: AsRef<Path>>(creds: &Vec<Credential>, path: P) -> Result<(), UpstreamError> {
+fn _write_vec_to_json<P: AsRef<Path>>(creds: &Vec<Credential>, path: P) -> Result<(), UpstreamError> {
     let parent_path = path.as_ref().parent().expect("Unable to get parent path");
     fs::create_dir_all(parent_path)?;
 
@@ -422,8 +461,8 @@ fn write_vec_to_json<P: AsRef<Path>>(creds: &Vec<Credential>, path: P) -> Result
     Ok(())
 }
 
-pub fn append_credential<P: AsRef<Path>>(path: P, new_cred: Credential) -> Result<(), UpstreamError> {
-    let mut creds = read_vec_from_json(&path)?;
+pub fn _append_credential<P: AsRef<Path>>(path: P, new_cred: Credential) -> Result<(), UpstreamError> {
+    let mut creds = _read_vec_from_json(&path)?;
 
     // case-sensitive
     // if let Some(pos) = creds.iter().position(|c| c.account_name == new_cred.account_name) {
@@ -437,10 +476,48 @@ pub fn append_credential<P: AsRef<Path>>(path: P, new_cred: Credential) -> Resul
         creds.push(new_cred);
     }
 
-    write_vec_to_json(&creds, &path)
+    _write_vec_to_json(&creds, &path)
 }
 
-pub fn find_and_decrypt<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(
+// Upsert (add or replace) a credential under its normalized account name key
+pub fn upsert_credential<P: AsRef<Path>>(path: P, new_cred: Credential) -> Result<(), UpstreamError> {
+    let mut map = read_map_from_json(&path)?;
+
+    // Keep struct.account_name consistent with the key for clarity
+    // (If you prefer, you can strip it from the struct entirely.)
+    let key = norm_key(&new_cred.account_name);
+
+    map.insert(key, new_cred);
+    write_map_to_json(&map, &path)
+}
+
+// Delete a credential by account name (case-insensitive)
+pub fn delete_credential<P: AsRef<Path>>(path: P, account: &str) -> Result<(), UpstreamError> {
+    let mut map = read_map_from_json(&path)?;
+    let k = norm_key(account);
+    if map.remove(&k).is_some() {
+        write_map_to_json(&map, &path)
+    } else {
+        Err(UpstreamError::Other(format!("No credential found for account: {}", account)))
+    }
+}
+
+// Optional: partial update helper if you want field-wise updates
+pub fn update_credential<P: AsRef<Path>>(
+    path: P,
+    account: &str,
+    f: impl FnOnce(&mut Credential),
+) -> Result<(), UpstreamError> {
+    let mut map = read_map_from_json(&path)?;
+    let k = norm_key(account);
+    let Some(c) = map.get_mut(&k) else {
+        return Err(UpstreamError::Other(format!("No credential found for account: {}", account)));
+    };
+    f(c);
+    write_map_to_json(&map, &path)
+}
+
+pub fn _find_and_decrypt<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(
     account: &str,
     key_file_path: P,
     nonce_file_path: R,
@@ -450,7 +527,7 @@ pub fn find_and_decrypt<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(
     let key = load_key_b64_from(key_file_path)?;
     let nonce = load_nonce_b64_from(nonce_file_path)?; // uses NONCE_TXT_PATH internally
 
-    let creds = read_vec_from_json(&creds_json_path)?;
+    let creds = _read_vec_from_json(&creds_json_path)?;
 
     // Find target (case-insensitive, consistent with append_credential)
     let enc = creds
@@ -460,6 +537,25 @@ pub fn find_and_decrypt<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(
             "No credential found for account: {}",
             account
         )))?;
+
+    decrypt_cred(&key, &nonce, enc)
+}
+// Map-based find (case-insensitive) + decrypt
+pub fn find_and_decrypt<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(
+    account: &str,
+    key_file_path: P,
+    nonce_file_path: R,
+    creds_json_path: Q,
+) -> Result<Credential, UpstreamError> {
+    let key = load_key_b64_from(key_file_path)?;
+    let nonce = load_nonce_b64_from(nonce_file_path)?;
+
+    let map = read_map_from_json(&creds_json_path)?;
+    let k = norm_key(account);
+    let enc = map.get(&k).ok_or_else(|| UpstreamError::Other(format!(
+        "No credential found for account: {}",
+        account
+    )))?;
 
     decrypt_cred(&key, &nonce, enc)
 }
