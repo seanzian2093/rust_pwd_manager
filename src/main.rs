@@ -1,89 +1,108 @@
+use std::path::Path;
+
 use clap::Parser;
 use pwd_manager::{
-    MyResult,
-    Credential, cli::{Cli, Commands},
-    encrypt_cred,
-    load_or_create_key_b64_from,
-    load_or_create_nonce_b64_from,
-    // append_credential,
-    upsert_credential,
-    update_credential,
-    find_and_decrypt,
+    Credential,
+    UpstreamError,
+    cli::{Cli, Commands},
     delete_credential,
-    encrypt_text,
+    encrypt_cred,
     encrypt_security_question,
     encrypt_sub_credential,
+    encrypt_text,
+    find_and_decrypt,
+    load_or_create_key_b64_from,
+    secret_input::{SecretSource, read_security_questions, read_sub_credentials, resolve_secret},
+    update_credential,
+    // append_credential,
+    upsert_credential,
 };
 
-fn main() -> MyResult {
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), UpstreamError> {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Add {
             account_name,
             user_name,
-            password,
-            security_questions,
-            sub_credentials,
+            password_file,
+            password_stdin,
+            sec_file,
+            sub_file,
             key_file,
-            nonce_file,
-            output
+            output,
         } => {
+            let source = match (&password_file, password_stdin) {
+                (Some(p), _) => SecretSource::File(Path::new(p)),
+                (None, true) => SecretSource::Stdin,
+                (None, false) => SecretSource::Auto,
+            };
+            let password = resolve_secret(source, &format!("Password for {}: ", account_name))?;
+
+            let security_questions = match &sec_file {
+                Some(p) => read_security_questions(Path::new(p))?,
+                None => Vec::new(),
+            };
+            let sub_credentials = match &sub_file {
+                Some(p) => read_sub_credentials(Path::new(p))?,
+                None => Vec::new(),
+            };
+
             let cred = Credential {
                 account_name,
                 user_name,
-                password,
+                password: password.to_string(),
                 security_questions,
                 sub_credentials,
             };
 
             println!("Adding credential: {:#?} - started", cred.account_name);
 
-            // to decrypt, key and nonce must match
             let key = load_or_create_key_b64_from(&key_file)?;
-            let nonce = load_or_create_nonce_b64_from(&nonce_file)?;
 
-            let enc = encrypt_cred(&key, &nonce, &cred).expect("Encryption failed");
-            // append_credential(&output, enc).expect("Write failed");
-            upsert_credential(&output, enc).expect("Write failed");
+            let enc = encrypt_cred(&key, &cred)?;
+            // append_credential(&output, enc)?;
+            upsert_credential(&output, enc)?;
 
             println!("Adding credential: {:#?} - succeeded", cred.account_name);
         }
-        Commands::Find { 
-            account, 
-            json ,
+        Commands::Find {
+            account,
+            json,
             key_file,
-            nonce_file,
             input,
         } => {
-            match find_and_decrypt(&account, &key_file, &nonce_file, &input) {
-                Ok(cred) => {
-                    if json {
-                        println!("{}", serde_json::to_string_pretty(&cred).unwrap());
-                    } else {
-                        println!(
-                            "Found credential for '{}': user={}, password={}",
-                            cred.account_name, cred.user_name, cred.password
-                        );
+            let cred = find_and_decrypt(&account, &key_file, &input)?;
 
-                        if !cred.security_questions.is_empty() {
-                            println!("Security questions:");
-                            for q in &cred.security_questions {
-                                println!("  - {} = {}", q.question, q.answer);
-                            }
-                        }
+            if json {
+                let rendered = serde_json::to_string_pretty(&cred)
+                    .map_err(|e| UpstreamError::Other(format!("Failed to render JSON: {}", e)))?;
+                println!("{}", rendered);
+            } else {
+                println!(
+                    "Found credential for '{}': user={}, password={}",
+                    cred.account_name, cred.user_name, cred.password
+                );
 
-                        if !cred.sub_credentials.is_empty() {
-                            println!("Sub credentials:");
-                            for s in &cred.sub_credentials {
-                                println!("  - {} = {}", s.cred_name, s.password);
-                            }
-                        }
+                if !cred.security_questions.is_empty() {
+                    println!("Security questions:");
+                    for q in &cred.security_questions {
+                        println!("  - {} = {}", q.question, q.answer);
                     }
                 }
-                Err(e) => {
-                    eprintln!("Error in finding credentials for '{}': {}", account, e);
-                    std::process::exit(1);
+
+                if !cred.sub_credentials.is_empty() {
+                    println!("Sub credentials:");
+                    for s in &cred.sub_credentials {
+                        println!("  - {} = {}", s.cred_name, s.password);
+                    }
                 }
             }
         }
@@ -91,33 +110,61 @@ fn main() -> MyResult {
             delete_credential(&input, &account)?;
             println!("Deleted credentials for account: {}", account);
         }
-        Commands::Update { account, user_name, password, security_questions, sub_credentials, input, key_file, nonce_file } => {
-            // Load key/nonce to (re)encrypt changed fields
+        Commands::Update {
+            account,
+            user_name,
+            set_password,
+            password_file,
+            sec_file,
+            sub_file,
+            input,
+            key_file,
+        } => {
+            let password = match (&password_file, set_password) {
+                (Some(p), _) => Some(resolve_secret(
+                    SecretSource::File(Path::new(p)),
+                    &format!("New password for {}: ", account),
+                )?),
+                (None, true) => Some(resolve_secret(
+                    SecretSource::Auto,
+                    &format!("New password for {}: ", account),
+                )?),
+                (None, false) => None,
+            };
+
+            let security_questions = match &sec_file {
+                Some(p) => read_security_questions(Path::new(p))?,
+                None => Vec::new(),
+            };
+            let sub_credentials = match &sub_file {
+                Some(p) => read_sub_credentials(Path::new(p))?,
+                None => Vec::new(),
+            };
+
+            // Load the key to (re)encrypt changed fields
             let key = load_or_create_key_b64_from(&key_file)?;
-            let nonce = load_or_create_nonce_b64_from(&nonce_file)?;
 
             update_credential(&input, &account, |c| {
                 if let Some(u) = user_name.as_ref() {
-                    c.user_name = encrypt_text(&key, &nonce, u.as_bytes()).unwrap();
+                    c.user_name = encrypt_text(&key, u.as_bytes())?;
                 }
                 if let Some(p) = password.as_ref() {
-                    c.password = encrypt_text(&key, &nonce, p.as_bytes()).unwrap();
+                    c.password = encrypt_text(&key, p.as_bytes())?;
                 }
                 if !security_questions.is_empty() {
                     c.security_questions = security_questions
                         .iter()
-                        .map(|q| encrypt_security_question(&key, &nonce, q))
-                        .collect::<Result<Vec<_>, _>>()
-                        .unwrap();
+                        .map(|q| encrypt_security_question(&key, q))
+                        .collect::<Result<Vec<_>, _>>()?;
                 }
                 if !sub_credentials.is_empty() {
                     c.sub_credentials = sub_credentials
                         .iter()
-                        .map(|s| encrypt_sub_credential(&key, &nonce, s))
-                        .collect::<Result<Vec<_>, _>>()
-                        .unwrap();
+                        .map(|s| encrypt_sub_credential(&key, s))
+                        .collect::<Result<Vec<_>, _>>()?;
                 }
                 // Keep struct.account_name unchanged to preserve original casing
+                Ok(())
             })?;
             println!("Updated credentials for account: {}", account);
         }

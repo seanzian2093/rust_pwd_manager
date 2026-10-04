@@ -1,5 +1,5 @@
 #cargo build
-target/debug/pwd_manager find outlook -j \
-    --key-file ~/.pwd_manager/key.txt \
-    --nonce-file ~/.pwd_manager/nonce.txt \
-    --input ~/.pwd_manager/credentials.json
+app_name="${1:-outlook}"
+target/debug/pwd_manager find "$app_name" -j \
+    --key-file ./data/input/key.txt \
+    --input ./data/output/credentials.json
