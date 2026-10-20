@@ -15,3 +15,7 @@ rpassword = "7.5.4"
 zeroize = "1.9.0"
 ciborium = "0.2.2"
 argon2 = "0.5"
+
+[dev-dependencies]
+assert_cmd = "2"
+proptest = "1"

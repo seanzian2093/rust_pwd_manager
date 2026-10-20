@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use proptest::prelude::*;
 use pwd_manager::*;
 use tempfile::TempDir;
 
@@ -230,6 +231,21 @@ fn test_encrypt_decrypt_text_round_trip() -> MyResult {
     );
 
     Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn property_encrypt_decrypt_text_round_trip(message in any::<String>()) {
+        let key = chacha20poly1305::Key::try_from_iter([0x42u8; 32])
+            .expect("32-byte test key is valid");
+        let encrypted = encrypt_text(&key, message.as_bytes())
+            .expect("text encryption succeeds");
+        let decrypted = decrypt_text(&key, &encrypted)
+            .expect("generated ciphertext decrypts");
+        prop_assert_eq!(decrypted.as_str(), message.as_str());
+    }
 }
 
 #[test]
@@ -754,6 +770,21 @@ fn test_find_redacts_secrets_unless_reveal_is_requested() -> MyResult {
     }
 
     Ok(())
+}
+
+#[test]
+fn test_cli_help_with_assert_cmd() {
+    let output = assert_cmd::Command::new(env!("CARGO_BIN_EXE_pwd_manager"))
+        .arg("--help")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let help = String::from_utf8(output).expect("CLI help is valid UTF-8");
+    assert!(help.contains("backup"));
+    assert!(help.contains("maintenance"));
 }
 
 #[test]
