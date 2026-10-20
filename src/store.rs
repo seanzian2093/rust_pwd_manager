@@ -123,6 +123,26 @@ impl Store {
         Ok(value.map(|guard| guard.value().to_vec()))
     }
 
+    /// Returns every account key and envelope from one read transaction.
+    pub fn get_all(&self) -> Result<Vec<(String, Vec<u8>)>, UpstreamError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| UpstreamError::Store(e.into()))?;
+        let table = match txn.open_table(TABLE) {
+            Ok(table) => table,
+            Err(TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(UpstreamError::Store(e.into())),
+        };
+
+        let mut entries = Vec::new();
+        for entry in table.iter().map_err(|e| UpstreamError::Store(e.into()))? {
+            let (key, value) = entry.map_err(|e| UpstreamError::Store(e.into()))?;
+            entries.push((key.value().to_string(), value.value().to_vec()));
+        }
+        Ok(entries)
+    }
+
     /// Removes `account_key`, returning whether it was present.
     pub fn remove(&self, account_key: &str) -> Result<bool, UpstreamError> {
         let txn = self

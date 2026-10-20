@@ -649,6 +649,59 @@ pub fn list_accounts<P: AsRef<Path>>(vault_path: P) -> Result<Vec<String>, Upstr
     store::Store::open(vault_path)?.list_keys()
 }
 
+/// Exports every credential as plaintext JSON to a new owner-only file.
+///
+/// Existing destination files are never overwritten. All records are decrypted
+/// and serialized before the destination is created.
+pub fn export_credentials<P: AsRef<Path>, Q: AsRef<Path>>(
+    vault_path: P,
+    key: &Key,
+    output_path: Q,
+) -> Result<usize, UpstreamError> {
+    use std::io::Write;
+
+    let vault_path = vault_path.as_ref();
+    if !vault_path.exists() {
+        return Err(UpstreamError::Other(format!(
+            "Vault file does not exist: {}",
+            vault_path.display()
+        )));
+    }
+
+    let entries = store::Store::open(vault_path)?.get_all()?;
+    let mut credentials = BTreeMap::new();
+    for (account, envelope) in entries {
+        let credential = decrypt_credential(key, &account, &envelope)?;
+        credentials.insert(account, credential);
+    }
+
+    let serialized = serde_json::to_vec_pretty(&credentials)
+        .map_err(|e| UpstreamError::Other(format!("Failed to serialize export JSON: {}", e)))?;
+
+    let output_path = output_path.as_ref();
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(output_path)?;
+
+    let write_result = file.write_all(&serialized).and_then(|()| file.sync_all());
+    if let Err(write_error) = write_result {
+        drop(file);
+        return match fs::remove_file(output_path) {
+            Ok(()) => Err(UpstreamError::IO(write_error)),
+            Err(cleanup_error) => Err(UpstreamError::Other(format!(
+                "Export failed: {}; could not remove incomplete plaintext file {}: {}",
+                write_error,
+                output_path.display(),
+                cleanup_error
+            ))),
+        };
+    }
+
+    Ok(credentials.len())
+}
+
 /// Decrypts every entry in the old per-field JSON store and re-encrypts it as a
 /// whole document into the redb vault. Returns the number of credentials imported.
 pub fn import_legacy_json<P: AsRef<Path>, Q: AsRef<Path>>(

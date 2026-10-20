@@ -33,6 +33,41 @@ pwd_manager find outlook --reveal
 The command prompts for the master passphrase. Without `--reveal`, secret values remain
 redacted in the output.
 
+To copy only one selected secret to the system clipboard without printing it:
+
+```sh
+pwd_manager find outlook --copy-password
+pwd_manager find outlook --copy-answer 1
+pwd_manager find outlook --copy-sub-password 1
+```
+
+Answer and sub-credential indices are 1-based. Clipboard contents may be visible to
+clipboard managers or other applications and are not automatically cleared.
+The `scripts/demo_find_options.sh` script demonstrates redacted output, `--reveal`, and
+each clipboard option. Run it as a command (do not `source` it); for example:
+
+```sh
+scripts/demo_find_options.sh outlook copy-answer 1
+```
+
+## Exporting credentials
+
+Export writes all decrypted credentials to a new plaintext JSON file. The destination must
+not already exist; on Unix it is created with owner-only permissions (`0600`). Treat the
+file as a plaintext backup containing every secret and store or remove it accordingly.
+
+```sh
+pwd_manager export \
+  --input ./data/output/vault.redb \
+  --output ./data/output/credentials-export.json
+```
+
+The export command prompts for the master passphrase. Use `--master-passphrase-file PATH`
+for non-interactive use, with the same precautions as other passphrase files. This plaintext
+export is not an input to the legacy-only `import` command.
+Run `scripts/export_cred.sh ./data/output/credentials-export.json` for a script example.
+The destination must be new; the script refuses to overwrite an existing file.
+
 ## Importing a legacy JSON vault
 
 Back up the legacy JSON file, key file, and (for older vaults) nonce file before importing.

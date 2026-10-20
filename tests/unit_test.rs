@@ -721,3 +721,181 @@ fn test_find_redacts_secrets_unless_reveal_is_requested() -> MyResult {
 
     Ok(())
 }
+
+#[test]
+fn test_export_cli_writes_owner_only_json_without_overwriting() -> MyResult {
+    let (dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_test_key(&key_path)?;
+    let passphrase_file = dir.path().join("master_passphrase.txt");
+    std::fs::write(&passphrase_file, TEST_MASTER_PASSPHRASE)?;
+
+    let mut credential = sample_credential2();
+    credential.password = "exported-main-secret".to_string();
+    credential.security_questions[0].answer = "exported-answer-secret".to_string();
+    upsert_credential(&vault_path, &key, &credential)?;
+
+    let export_path = dir.path().join("export.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_pwd_manager"))
+        .args([
+            "export",
+            "--input",
+            vault_path.to_str().expect("temporary path is UTF-8"),
+            "--output",
+            export_path.to_str().expect("temporary path is UTF-8"),
+            "--key-file",
+            key_path.to_str().expect("temporary path is UTF-8"),
+            "--master-passphrase-file",
+            passphrase_file.to_str().expect("temporary path is UTF-8"),
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "export command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Exported 1 credential"));
+    assert!(!stdout.contains("exported-main-secret"));
+    assert!(!stdout.contains("exported-answer-secret"));
+
+    let exported: std::collections::BTreeMap<String, Credential> =
+        serde_json::from_slice(&std::fs::read(&export_path)?)
+            .map_err(|e| UpstreamError::Other(e.to_string()))?;
+    assert_eq!(exported["rustrover"].password, "exported-main-secret");
+    assert_eq!(
+        exported["rustrover"].security_questions[0].answer,
+        "exported-answer-secret"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&export_path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    let original_export = std::fs::read(&export_path)?;
+    let second_attempt = Command::new(env!("CARGO_BIN_EXE_pwd_manager"))
+        .args([
+            "export",
+            "--input",
+            vault_path.to_str().expect("temporary path is UTF-8"),
+            "--output",
+            export_path.to_str().expect("temporary path is UTF-8"),
+            "--key-file",
+            key_path.to_str().expect("temporary path is UTF-8"),
+            "--master-passphrase-file",
+            passphrase_file.to_str().expect("temporary path is UTF-8"),
+        ])
+        .output()?;
+    assert!(!second_attempt.status.success());
+    assert_eq!(std::fs::read(&export_path)?, original_export);
+
+    Ok(())
+}
+
+#[test]
+fn test_export_missing_vault_fails_without_creating_files() -> MyResult {
+    let (_dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_test_key(&key_path)?;
+    let export_path = vault_path.with_file_name("export.json");
+
+    assert!(export_credentials(&vault_path, &key, &export_path).is_err());
+    assert!(!vault_path.exists());
+    assert!(!export_path.exists());
+    Ok(())
+}
+
+#[test]
+fn test_find_clipboard_selection_rejects_invalid_indices() -> MyResult {
+    let (dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_test_key(&key_path)?;
+    let passphrase_file = dir.path().join("master_passphrase.txt");
+    std::fs::write(&passphrase_file, TEST_MASTER_PASSPHRASE)?;
+    upsert_credential(&vault_path, &key, &sample_credential2())?;
+
+    for (flag, index) in [("--copy-answer", "0"), ("--copy-sub-password", "3")] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pwd_manager"))
+            .args([
+                "find",
+                "RustRover",
+                flag,
+                index,
+                "--key-file",
+                key_path.to_str().expect("temporary path is UTF-8"),
+                "--input",
+                vault_path.to_str().expect("temporary path is UTF-8"),
+                "--master-passphrase-file",
+                passphrase_file.to_str().expect("temporary path is UTF-8"),
+            ])
+            .output()?;
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("out of range"),
+            "unexpected error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_find_copies_only_selected_secret_to_clipboard() -> MyResult {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_test_key(&key_path)?;
+    let passphrase_file = dir.path().join("master_passphrase.txt");
+    std::fs::write(&passphrase_file, TEST_MASTER_PASSPHRASE)?;
+
+    let secret = "clipboard-only-secret";
+    let mut credential = sample_credential2();
+    credential.password = secret.to_string();
+    upsert_credential(&vault_path, &key, &credential)?;
+
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir(&bin_dir)?;
+    let fake_pbcopy = bin_dir.join("pbcopy");
+    std::fs::write(
+        &fake_pbcopy,
+        "#!/bin/sh\ncat > \"$PWD_MANAGER_CLIPBOARD_CAPTURE\"\n",
+    )?;
+    std::fs::set_permissions(&fake_pbcopy, std::fs::Permissions::from_mode(0o700))?;
+
+    let capture_path = dir.path().join("clipboard.txt");
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let paths = std::iter::once(bin_dir)
+        .chain(std::env::split_paths(&old_path))
+        .collect::<Vec<_>>();
+    let path = std::env::join_paths(paths)
+        .map_err(|e| UpstreamError::Other(format!("Invalid test PATH: {}", e)))?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_pwd_manager"))
+        .args([
+            "find",
+            "RustRover",
+            "--copy-password",
+            "--key-file",
+            key_path.to_str().expect("temporary path is UTF-8"),
+            "--input",
+            vault_path.to_str().expect("temporary path is UTF-8"),
+            "--master-passphrase-file",
+            passphrase_file.to_str().expect("temporary path is UTF-8"),
+        ])
+        .env("PATH", path)
+        .env("PWD_MANAGER_CLIPBOARD_CAPTURE", &capture_path)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "clipboard command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Copied account password to clipboard."));
+    assert!(!stdout.contains(secret));
+    assert_eq!(std::fs::read_to_string(capture_path)?, secret);
+    Ok(())
+}

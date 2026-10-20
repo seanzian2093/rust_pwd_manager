@@ -1,10 +1,14 @@
-use std::path::Path;
+use std::{
+    io::Write,
+    path::Path,
+    process::{Command, Stdio},
+};
 
 use clap::Parser;
 use pwd_manager::{
     Credential, UpstreamError,
     cli::{Cli, Commands},
-    delete_credential, find_and_decrypt, import_legacy_json_with_nonce,
+    delete_credential, export_credentials, find_and_decrypt, import_legacy_json_with_nonce,
     key_file_requires_confirmation, list_accounts, load_key_from, load_or_create_key,
     secret_input::{
         SecretSource, read_security_questions, read_sub_credentials, resolve_master_passphrase,
@@ -12,6 +16,65 @@ use pwd_manager::{
     },
     update_credential, upsert_credential,
 };
+
+fn copy_to_clipboard(secret: &str) -> Result<(), UpstreamError> {
+    #[cfg(target_os = "macos")]
+    let clipboard_commands: &[(&str, &[&str])] = &[("pbcopy", &[])];
+
+    #[cfg(target_os = "windows")]
+    let clipboard_commands: &[(&str, &[&str])] = &[("clip", &[])];
+
+    #[cfg(target_os = "linux")]
+    let clipboard_commands: &[(&str, &[&str])] = &[
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+        ("xsel", &["--clipboard", "--input"]),
+    ];
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    return Err(UpstreamError::Other(
+        "Clipboard output is not supported on this platform".to_string(),
+    ));
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        let mut not_found = Vec::new();
+        for (program, args) in clipboard_commands {
+            let mut child = match Command::new(program)
+                .args(*args)
+                .stdin(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    not_found.push(*program);
+                    continue;
+                }
+                Err(error) => return Err(UpstreamError::IO(error)),
+            };
+
+            let mut stdin = child.stdin.take().ok_or_else(|| {
+                UpstreamError::Other(format!("Failed to open stdin for {}", program))
+            })?;
+            let write_result = stdin.write_all(secret.as_bytes());
+            drop(stdin);
+            let status = child.wait()?;
+            write_result?;
+            if !status.success() {
+                return Err(UpstreamError::Other(format!(
+                    "Clipboard utility {} exited with status {}",
+                    program, status
+                )));
+            }
+            return Ok(());
+        }
+
+        Err(UpstreamError::Other(format!(
+            "No clipboard utility found (tried {})",
+            not_found.join(", ")
+        )))
+    }
+}
 
 fn main() {
     if let Err(e) = run() {
@@ -88,6 +151,9 @@ fn run() -> Result<(), UpstreamError> {
             account,
             json,
             reveal,
+            copy_password,
+            copy_answer,
+            copy_sub_password,
             master_passphrase_file,
             key_file,
             input,
@@ -96,7 +162,34 @@ fn run() -> Result<(), UpstreamError> {
             let key = unlock_key_file(&key_file, false, master_passphrase_file.as_deref())?;
             let cred = find_and_decrypt(&account, &key, &input)?;
 
-            if json {
+            if copy_password {
+                copy_to_clipboard(&cred.password)?;
+                println!("Copied account password to clipboard.");
+            } else if let Some(index) = copy_answer {
+                let answer = index
+                    .checked_sub(1)
+                    .and_then(|index| cred.security_questions.get(index))
+                    .ok_or_else(|| {
+                        UpstreamError::Other(format!(
+                            "Security-question index {} is out of range (indices start at 1)",
+                            index
+                        ))
+                    })?;
+                copy_to_clipboard(&answer.answer)?;
+                println!("Copied security-question answer {} to clipboard.", index);
+            } else if let Some(index) = copy_sub_password {
+                let password = index
+                    .checked_sub(1)
+                    .and_then(|index| cred.sub_credentials.get(index))
+                    .ok_or_else(|| {
+                        UpstreamError::Other(format!(
+                            "Sub-credential index {} is out of range (indices start at 1)",
+                            index
+                        ))
+                    })?;
+                copy_to_clipboard(&password.password)?;
+                println!("Copied sub-credential password {} to clipboard.", index);
+            } else if json {
                 let mut output_cred = cred;
                 if !reveal {
                     output_cred.password = "******".to_string();
@@ -163,6 +256,16 @@ fn run() -> Result<(), UpstreamError> {
                 &output,
             )?;
             println!("Imported {} credential(s) into {}", count, output);
+        }
+        Commands::Export {
+            input,
+            output,
+            master_passphrase_file,
+            key_file,
+        } => {
+            let key = unlock_key_file(&key_file, false, master_passphrase_file.as_deref())?;
+            let count = export_credentials(&input, &key, &output)?;
+            println!("Exported {} credential(s) to {}", count, output);
         }
         Commands::Update {
             account,

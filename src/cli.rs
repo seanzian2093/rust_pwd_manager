@@ -112,6 +112,29 @@ pub enum Commands {
         #[arg(long)]
         reveal: bool,
 
+        /// Copy the account password to the clipboard instead of printing secrets
+        #[arg(
+            long,
+            conflicts_with_all = ["json", "reveal", "copy_answer", "copy_sub_password"]
+        )]
+        copy_password: bool,
+
+        /// Copy a security-question answer to the clipboard (1-based index)
+        #[arg(
+            long,
+            value_name = "INDEX",
+            conflicts_with_all = ["json", "reveal", "copy_password", "copy_sub_password"]
+        )]
+        copy_answer: Option<usize>,
+
+        /// Copy a sub-credential password to the clipboard (1-based index)
+        #[arg(
+            long,
+            value_name = "INDEX",
+            conflicts_with_all = ["json", "reveal", "copy_password", "copy_answer"]
+        )]
+        copy_sub_password: Option<usize>,
+
         /// Read the vault master passphrase from an owner-only file
         #[arg(long = "master-passphrase-file", value_name = "PATH")]
         master_passphrase_file: Option<String>,
@@ -187,6 +210,34 @@ pub enum Commands {
             default_value = "data/output/vault.redb"
         )]
         output: String,
+    },
+
+    /// Export all credentials to a new owner-only plaintext JSON file
+    Export {
+        /// Path to the vault file to export
+        #[arg(
+            short = 'i',
+            long = "input",
+            value_name = "FILE",
+            default_value = "data/output/vault.redb"
+        )]
+        input: String,
+
+        /// Destination JSON file; must not already exist
+        #[arg(long = "output", value_name = "FILE", required = true)]
+        output: String,
+
+        /// Read the vault master passphrase from an owner-only file
+        #[arg(long = "master-passphrase-file", value_name = "PATH")]
+        master_passphrase_file: Option<String>,
+
+        /// Path to the Argon2-wrapped key file
+        #[arg(
+            long = "key-file",
+            value_name = "PATH",
+            default_value = "data/input/key.txt"
+        )]
+        key_file: String,
     },
 
     /// Update credential fields; unspecified fields remain unchanged
