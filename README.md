@@ -2,6 +2,9 @@
 
 A tiny command-line tool for managing credentials, developed in Rust.
 
+For end-user instructions, see the [Password Manager User Guide](./USER_GUIDE.md). This
+README retains a few quick examples and project-specific notes.
+
 ## Master passphrase and key protection
 
 The data-encryption key is randomly generated and stored only as an authenticated,
