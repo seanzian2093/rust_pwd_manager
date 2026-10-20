@@ -93,7 +93,7 @@ impl From<redb::Error> for UpstreamError {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Credential {
     pub account_name: String,
     pub user_name: String,
@@ -102,16 +102,80 @@ pub struct Credential {
     pub sub_credentials: Vec<SubCredential>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SecurityQuestion {
     pub question: String,
     pub answer: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SubCredential {
     pub cred_name: String,
     pub password: String,
+}
+
+impl fmt::Debug for Credential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Credential")
+            .field("account_name", &self.account_name)
+            .field("user_name", &"[REDACTED]")
+            .field("password", &"[REDACTED]")
+            .field(
+                "security_questions",
+                &format!(
+                    "[{} question(s); answers redacted]",
+                    self.security_questions.len()
+                ),
+            )
+            .field(
+                "sub_credentials",
+                &format!(
+                    "[{} credential(s); passwords redacted]",
+                    self.sub_credentials.len()
+                ),
+            )
+            .finish()
+    }
+}
+
+impl fmt::Debug for SecurityQuestion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecurityQuestion")
+            .field("question", &"[REDACTED]")
+            .field("answer", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl fmt::Debug for SubCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SubCredential")
+            .field("cred_name", &"[REDACTED]")
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for Credential {
+    fn drop(&mut self) {
+        self.account_name.zeroize();
+        self.user_name.zeroize();
+        self.password.zeroize();
+    }
+}
+
+impl Drop for SecurityQuestion {
+    fn drop(&mut self) {
+        self.question.zeroize();
+        self.answer.zeroize();
+    }
+}
+
+impl Drop for SubCredential {
+    fn drop(&mut self) {
+        self.cred_name.zeroize();
+        self.password.zeroize();
+    }
 }
 
 /// Creates a file holding secret material with owner-only permissions.
@@ -404,7 +468,11 @@ fn encrypt_envelope(key: &Key, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, 
 
 /// Inverse of [`encrypt_envelope`]. `aad` must match what was passed to encrypt,
 /// or authentication fails.
-fn decrypt_envelope(key: &Key, aad: &[u8], envelope: &[u8]) -> Result<Vec<u8>, UpstreamError> {
+fn decrypt_envelope(
+    key: &Key,
+    aad: &[u8],
+    envelope: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, UpstreamError> {
     if envelope.len() <= NONCE_LEN {
         return Err(UpstreamError::Other(format!(
             "Ciphertext too short: {} bytes (expected more than {})",
@@ -425,7 +493,7 @@ fn decrypt_envelope(key: &Key, aad: &[u8], envelope: &[u8]) -> Result<Vec<u8>, U
             aad,
         },
     )?;
-    Ok(plaintext)
+    Ok(Zeroizing::new(plaintext))
 }
 
 /// Encrypts under a freshly generated nonce, returning base64 of `nonce || ciphertext || tag`.
@@ -434,16 +502,16 @@ pub fn encrypt_text(key: &Key, plaintext: &[u8]) -> Result<String, UpstreamError
     Ok(general_purpose::STANDARD.encode(envelope))
 }
 
-pub fn decrypt_text(key: &Key, b64_s: &str) -> Result<String, UpstreamError> {
+pub fn decrypt_text(key: &Key, b64_s: &str) -> Result<Zeroizing<String>, UpstreamError> {
     let envelope = general_purpose::STANDARD
         .decode(b64_s)
         .map_err(|e| UpstreamError::Other(format!("B64 decode error: {}", e)))?;
 
     let plaintext = decrypt_envelope(key, b"", &envelope)?;
-    let plaintext = String::from_utf8(plaintext)
-        .map_err(|e| UpstreamError::Other(format!("from_utf8 error: {}", e)))?;
-
-    Ok(plaintext)
+    std::str::from_utf8(&plaintext)
+        .map(str::to_owned)
+        .map(Zeroizing::new)
+        .map_err(|e| UpstreamError::Other(format!("from_utf8 error: {}", e)))
 }
 
 /// Encrypts the whole credential as one CBOR document, binding `account_key` as AAD
@@ -453,8 +521,8 @@ pub fn encrypt_credential(
     account_key: &str,
     cred: &Credential,
 ) -> Result<Vec<u8>, UpstreamError> {
-    let mut plaintext = Vec::new();
-    ciborium::into_writer(cred, &mut plaintext)
+    let mut plaintext = Zeroizing::new(Vec::new());
+    ciborium::into_writer(cred, &mut *plaintext)
         .map_err(|e| UpstreamError::Other(format!("CBOR encode error: {}", e)))?;
 
     encrypt_envelope(key, account_key.as_bytes(), &plaintext)
@@ -477,7 +545,7 @@ fn legacy_decrypt_text(
     key: &Key,
     ciphertext_b64: &str,
     fixed_nonce: Option<&XNonce>,
-) -> Result<String, UpstreamError> {
+) -> Result<Zeroizing<String>, UpstreamError> {
     let ciphertext = general_purpose::STANDARD
         .decode(ciphertext_b64)
         .map_err(|e| UpstreamError::Other(format!("Invalid legacy ciphertext: {}", e)))?;
@@ -485,22 +553,29 @@ fn legacy_decrypt_text(
     if ciphertext.len() > NONCE_LEN
         && let Ok(plaintext) = decrypt_envelope(key, b"", &ciphertext)
     {
-        return String::from_utf8(plaintext).map_err(|e| {
-            UpstreamError::Other(format!("Legacy plaintext is not valid UTF-8: {}", e))
-        });
+        return std::str::from_utf8(&plaintext)
+            .map(str::to_owned)
+            .map(Zeroizing::new)
+            .map_err(|e| {
+                UpstreamError::Other(format!("Legacy plaintext is not valid UTF-8: {}", e))
+            });
     }
 
     if let Some(nonce) = fixed_nonce {
         let cipher = XChaCha20Poly1305::new(key);
-        let plaintext = cipher.decrypt(nonce, ciphertext.as_ref()).map_err(|_| {
-            UpstreamError::Other(
-                "Legacy ciphertext could not be decrypted; check the key and legacy nonce"
-                    .to_string(),
-            )
-        })?;
-        return String::from_utf8(plaintext).map_err(|e| {
-            UpstreamError::Other(format!("Legacy plaintext is not valid UTF-8: {}", e))
-        });
+        let plaintext =
+            Zeroizing::new(cipher.decrypt(nonce, ciphertext.as_ref()).map_err(|_| {
+                UpstreamError::Other(
+                    "Legacy ciphertext could not be decrypted; check the key and legacy nonce"
+                        .to_string(),
+                )
+            })?);
+        return std::str::from_utf8(&plaintext)
+            .map(str::to_owned)
+            .map(Zeroizing::new)
+            .map_err(|e| {
+                UpstreamError::Other(format!("Legacy plaintext is not valid UTF-8: {}", e))
+            });
     }
 
     Err(UpstreamError::Other(
@@ -518,7 +593,7 @@ fn legacy_decrypt_security_question(
 
     Ok(SecurityQuestion {
         question: q.question.clone(),
-        answer,
+        answer: answer.to_string(),
     })
 }
 
@@ -531,7 +606,7 @@ fn legacy_decrypt_sub_credential(
 
     Ok(SubCredential {
         cred_name: s.cred_name.clone(),
-        password,
+        password: password.to_string(),
     })
 }
 
@@ -558,8 +633,8 @@ fn legacy_decrypt_cred(
 
     Ok(Credential {
         account_name: cred.account_name.clone(),
-        user_name,
-        password,
+        user_name: user_name.to_string(),
+        password: password.to_string(),
         security_questions,
         sub_credentials,
     })
@@ -696,8 +771,10 @@ pub fn export_credentials<P: AsRef<Path>, Q: AsRef<Path>>(
         credentials.insert(account, credential);
     }
 
-    let serialized = serde_json::to_vec_pretty(&credentials)
-        .map_err(|e| UpstreamError::Other(format!("Failed to serialize export JSON: {}", e)))?;
+    let serialized =
+        Zeroizing::new(serde_json::to_vec_pretty(&credentials).map_err(|e| {
+            UpstreamError::Other(format!("Failed to serialize export JSON: {}", e))
+        })?);
 
     let output_path = output_path.as_ref();
     let mut options = OpenOptions::new();

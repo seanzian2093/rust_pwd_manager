@@ -68,6 +68,15 @@ export is not an input to the legacy-only `import` command.
 Run `scripts/export_cred.sh ./data/output/credentials-export.json` for a script example.
 The destination must be new; the script refuses to overwrite an existing file.
 
+## Plaintext lifetime
+
+Credential fields are zeroized when their values are dropped, decrypted byte buffers and
+temporary serialized output buffers are zeroized when released, and `Debug` output redacts
+credential values. This is best-effort memory hygiene, not a guarantee that every copy is
+removed: Rust libraries, the allocator, operating system, terminal output, clipboard
+services, and explicit plaintext exports can retain or copy data. Avoid `--reveal` unless
+you intend to expose secrets in stdout.
+
 ## Vault backup, restore, and compaction
 
 Create a backup at a new path with `backup`. The backup contains the encrypted vault, not

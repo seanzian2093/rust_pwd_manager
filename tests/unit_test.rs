@@ -64,6 +64,37 @@ fn sample_credential() -> Credential {
     }
 }
 
+#[test]
+fn test_credential_debug_redacts_secrets_and_identifiers() {
+    let credential = Credential {
+        account_name: "visible-account".to_string(),
+        user_name: "private-username".to_string(),
+        password: "private-password".to_string(),
+        security_questions: vec![SecurityQuestion {
+            question: "private-question".to_string(),
+            answer: "private-answer".to_string(),
+        }],
+        sub_credentials: vec![SubCredential {
+            cred_name: "private-sub-name".to_string(),
+            password: "private-sub-password".to_string(),
+        }],
+    };
+
+    let debug = format!("{credential:?}");
+    assert!(debug.contains("visible-account"));
+    for secret in [
+        "private-username",
+        "private-password",
+        "private-question",
+        "private-answer",
+        "private-sub-name",
+        "private-sub-password",
+    ] {
+        assert!(!debug.contains(secret), "Debug output leaked {secret}");
+    }
+    assert!(debug.contains("[REDACTED]"));
+}
+
 fn b64_encode(bytes: &[u8]) -> String {
     use base64::{Engine as _, engine::general_purpose};
     general_purpose::STANDARD.encode(bytes)
@@ -104,7 +135,7 @@ fn test_key_is_created_then_reloaded_unchanged() -> MyResult {
 
     // A value encrypted under the first handle must decrypt under the second.
     let ciphertext = encrypt_text(&created, b"round trip".as_ref())?;
-    assert_eq!(decrypt_text(&reloaded, &ciphertext)?, "round trip");
+    assert_eq!(decrypt_text(&reloaded, &ciphertext)?.as_str(), "round trip");
 
     Ok(())
 }
@@ -193,7 +224,10 @@ fn test_encrypt_decrypt_text_round_trip() -> MyResult {
     let key = load_or_create_key_b64_from(&key_path)?;
 
     let ciphertext = encrypt_text(&key, b"plaintext message2".as_ref())?;
-    assert_eq!(decrypt_text(&key, &ciphertext)?, "plaintext message2");
+    assert_eq!(
+        decrypt_text(&key, &ciphertext)?.as_str(),
+        "plaintext message2"
+    );
 
     Ok(())
 }
@@ -210,8 +244,8 @@ fn test_encrypt_text_uses_fresh_nonce() -> MyResult {
         a, b,
         "identical plaintexts must not produce identical ciphertexts"
     );
-    assert_eq!(decrypt_text(&key, &a)?, "same message");
-    assert_eq!(decrypt_text(&key, &b)?, "same message");
+    assert_eq!(decrypt_text(&key, &a)?.as_str(), "same message");
+    assert_eq!(decrypt_text(&key, &b)?.as_str(), "same message");
 
     Ok(())
 }

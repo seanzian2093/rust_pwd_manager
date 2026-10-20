@@ -17,6 +17,7 @@ use pwd_manager::{
     },
     update_credential, upsert_credential,
 };
+use zeroize::{Zeroize, Zeroizing};
 
 fn copy_to_clipboard(secret: &str) -> Result<(), UpstreamError> {
     #[cfg(target_os = "macos")]
@@ -193,17 +194,22 @@ fn run() -> Result<(), UpstreamError> {
             } else if json {
                 let mut output_cred = cred;
                 if !reveal {
+                    output_cred.password.zeroize();
                     output_cred.password = "******".to_string();
                     for question in &mut output_cred.security_questions {
+                        question.answer.zeroize();
                         question.answer = "******".to_string();
                     }
                     for sub_credential in &mut output_cred.sub_credentials {
+                        sub_credential.password.zeroize();
                         sub_credential.password = "******".to_string();
                     }
                 }
-                let rendered = serde_json::to_string_pretty(&output_cred)
-                    .map_err(|e| UpstreamError::Other(format!("Failed to render JSON: {}", e)))?;
-                println!("{}", rendered);
+                let rendered =
+                    Zeroizing::new(serde_json::to_string_pretty(&output_cred).map_err(|e| {
+                        UpstreamError::Other(format!("Failed to render JSON: {}", e))
+                    })?);
+                println!("{}", *rendered);
             } else {
                 let password = if reveal { &cred.password } else { "******" };
                 println!(
@@ -326,9 +332,11 @@ fn run() -> Result<(), UpstreamError> {
 
             update_credential(&input, &key, &account, |c| {
                 if let Some(u) = user_name {
+                    c.user_name.zeroize();
                     c.user_name = u;
                 }
                 if let Some(p) = password {
+                    c.password.zeroize();
                     c.password = p.to_string();
                 }
                 if !security_questions.is_empty() {
