@@ -4,9 +4,12 @@ use clap::Parser;
 use pwd_manager::{
     Credential, UpstreamError,
     cli::{Cli, Commands},
-    delete_credential, find_and_decrypt, import_legacy_json, list_accounts, load_key_b64_from,
-    load_or_create_key_b64_from,
-    secret_input::{SecretSource, read_security_questions, read_sub_credentials, resolve_secret},
+    delete_credential, find_and_decrypt, import_legacy_json, key_file_requires_confirmation,
+    list_accounts, load_key_from, load_or_create_key,
+    secret_input::{
+        SecretSource, read_security_questions, read_sub_credentials, resolve_master_passphrase,
+        resolve_secret,
+    },
     update_credential, upsert_credential,
 };
 
@@ -14,6 +17,23 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("error: {}", e);
         std::process::exit(1);
+    }
+}
+
+fn unlock_key_file(
+    key_file: &str,
+    create_if_missing: bool,
+    passphrase_file: Option<&str>,
+) -> Result<chacha20poly1305::Key, UpstreamError> {
+    if !create_if_missing && !Path::new(key_file).exists() {
+        return Err(UpstreamError::Other(format!("{} does not exist", key_file)));
+    }
+    let confirm = key_file_requires_confirmation(key_file)?;
+    let passphrase = resolve_master_passphrase(passphrase_file.map(Path::new), confirm)?;
+    if create_if_missing {
+        load_or_create_key(key_file, &passphrase)
+    } else {
+        load_key_from(key_file, &passphrase)
     }
 }
 
@@ -26,6 +46,7 @@ fn run() -> Result<(), UpstreamError> {
             user_name,
             password_file,
             password_stdin,
+            master_passphrase_file,
             sec_file,
             sub_file,
             key_file,
@@ -57,7 +78,7 @@ fn run() -> Result<(), UpstreamError> {
 
             println!("Adding credential: {:#?} - started", cred.account_name);
 
-            let key = load_or_create_key_b64_from(&key_file)?;
+            let key = unlock_key_file(&key_file, true, master_passphrase_file.as_deref())?;
 
             upsert_credential(&output, &key, &cred)?;
 
@@ -67,11 +88,12 @@ fn run() -> Result<(), UpstreamError> {
             account,
             json,
             reveal,
+            master_passphrase_file,
             key_file,
             input,
         } => {
-            // Do not create a key here: finding must fail if no vault key exists yet.
-            let key = load_key_b64_from(&key_file)?;
+            // Do not create or replace a missing key while finding.
+            let key = unlock_key_file(&key_file, false, master_passphrase_file.as_deref())?;
             let cred = find_and_decrypt(&account, &key, &input)?;
 
             if json {
@@ -128,10 +150,11 @@ fn run() -> Result<(), UpstreamError> {
         }
         Commands::Import {
             legacy_input,
+            master_passphrase_file,
             key_file,
             output,
         } => {
-            let key = load_key_b64_from(&key_file)?;
+            let key = unlock_key_file(&key_file, false, master_passphrase_file.as_deref())?;
             let count = import_legacy_json(&legacy_input, &key, &output)?;
             println!("Imported {} credential(s) into {}", count, output);
         }
@@ -142,6 +165,7 @@ fn run() -> Result<(), UpstreamError> {
             password_file,
             sec_file,
             sub_file,
+            master_passphrase_file,
             input,
             key_file,
         } => {
@@ -167,7 +191,7 @@ fn run() -> Result<(), UpstreamError> {
             };
 
             // Load the key to (re)encrypt the whole document on save
-            let key = load_or_create_key_b64_from(&key_file)?;
+            let key = unlock_key_file(&key_file, true, master_passphrase_file.as_deref())?;
 
             update_credential(&input, &key, &account, |c| {
                 if let Some(u) = user_name {

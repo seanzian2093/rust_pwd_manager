@@ -69,6 +69,10 @@ pub enum Commands {
         #[arg(long = "password-stdin")]
         password_stdin: bool,
 
+        /// Read the vault master passphrase from an owner-only file
+        #[arg(long = "master-passphrase-file", value_name = "PATH")]
+        master_passphrase_file: Option<String>,
+
         /// Read security questions from this file, one QUESTION=ANSWER per line
         #[arg(long = "sec-file", value_name = "PATH")]
         sec_file: Option<String>,
@@ -77,7 +81,7 @@ pub enum Commands {
         #[arg(long = "sub-file", value_name = "PATH")]
         sub_file: Option<String>,
 
-        /// Path to the Base64 key file (will be created if missing)
+        /// Path to the Argon2-wrapped key file (created or upgraded if needed)
         #[arg(
             long = "key-file",
             value_name = "PATH",
@@ -108,7 +112,11 @@ pub enum Commands {
         #[arg(long)]
         reveal: bool,
 
-        /// Path to the Base64 key file
+        /// Read the vault master passphrase from an owner-only file
+        #[arg(long = "master-passphrase-file", value_name = "PATH")]
+        master_passphrase_file: Option<String>,
+
+        /// Path to the Argon2-wrapped key file
         #[arg(
             long = "key-file",
             value_name = "PATH",
@@ -155,7 +163,11 @@ pub enum Commands {
         #[arg(long = "legacy-input", value_name = "FILE")]
         legacy_input: String,
 
-        /// Path to the Base64 key file used to encrypt the legacy store
+        /// Read the vault master passphrase from an owner-only file
+        #[arg(long = "master-passphrase-file", value_name = "PATH")]
+        master_passphrase_file: Option<String>,
+
+        /// Path to the wrapped key file used to encrypt the legacy store
         #[arg(
             long = "key-file",
             value_name = "PATH",
@@ -198,6 +210,10 @@ pub enum Commands {
         /// Read sub credentials from this file, one NAME=PASSWORD per line
         #[arg(long = "sub-file", value_name = "PATH")]
         sub_file: Option<String>,
+
+        /// Read the vault master passphrase from an owner-only file
+        #[arg(long = "master-passphrase-file", value_name = "PATH")]
+        master_passphrase_file: Option<String>,
 
         #[arg(
             short = 'i',

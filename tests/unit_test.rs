@@ -4,12 +4,26 @@ use std::process::Command;
 use pwd_manager::*;
 use tempfile::TempDir;
 
+const TEST_MASTER_PASSPHRASE: &str = "test-only master passphrase";
+
 /// Each test gets its own directory so nothing is shared across parallel runs.
 fn temp_env() -> (TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = dir.path().join("key.txt");
     let vault_path = dir.path().join("vault.redb");
     (dir, key_path, vault_path)
+}
+
+fn load_or_create_key_b64_from(
+    path: impl AsRef<std::path::Path>,
+) -> Result<chacha20poly1305::Key, UpstreamError> {
+    load_or_create_key(path, TEST_MASTER_PASSPHRASE)
+}
+
+fn load_key_b64_from(
+    path: impl AsRef<std::path::Path>,
+) -> Result<chacha20poly1305::Key, UpstreamError> {
+    load_key_from(path, TEST_MASTER_PASSPHRASE)
 }
 
 fn sample_credential2() -> Credential {
@@ -81,6 +95,60 @@ fn test_key_is_created_then_reloaded_unchanged() -> MyResult {
 fn test_load_key_b64_from_missing_path_errors() {
     let (_dir, key_path, _) = temp_env();
     assert!(load_key_b64_from(&key_path).is_err());
+}
+
+#[test]
+fn test_wrapped_key_rejects_wrong_passphrase() -> MyResult {
+    let (_dir, key_path, _) = temp_env();
+    let key = load_or_create_test_key(&key_path)?;
+    assert!(load_key_from(&key_path, "incorrect passphrase").is_err());
+    assert_eq!(load_key_from(&key_path, TEST_MASTER_PASSPHRASE)?, key);
+    Ok(())
+}
+
+#[test]
+fn test_wrapped_key_rejects_tampered_kdf_parameters() -> MyResult {
+    let (_dir, key_path, _) = temp_env();
+    load_or_create_test_key(&key_path)?;
+    let contents = std::fs::read_to_string(&key_path)?;
+    let tampered = contents.replace("\"memory_kib\":19456", "\"memory_kib\":19457");
+    assert_ne!(tampered, contents);
+    std::fs::write(&key_path, tampered)?;
+    assert!(load_key_from(&key_path, TEST_MASTER_PASSPHRASE).is_err());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn test_wrapped_key_file_is_owner_only() -> MyResult {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_dir, key_path, _) = temp_env();
+    load_or_create_test_key(&key_path)?;
+    let mode = std::fs::metadata(&key_path)?.permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    Ok(())
+}
+
+#[test]
+fn test_legacy_key_file_is_upgraded_without_changing_data_key() -> MyResult {
+    let (_dir, key_path, _) = temp_env();
+    let legacy_key = [42u8; 32];
+    std::fs::write(&key_path, b64_encode(&legacy_key))?;
+
+    let loaded = load_key_from(&key_path, TEST_MASTER_PASSPHRASE)?;
+    let expected = chacha20poly1305::Key::try_from_iter(legacy_key)
+        .map_err(|e| UpstreamError::Other(e.to_string()))?;
+    assert_eq!(loaded, expected);
+    assert!(std::fs::read_to_string(&key_path)?.starts_with("PWD_MANAGER_WRAPPED_KEY_V1\n"));
+    assert!(!key_file_requires_confirmation(&key_path)?);
+    Ok(())
+}
+
+fn load_or_create_test_key(
+    path: impl AsRef<std::path::Path>,
+) -> Result<chacha20poly1305::Key, UpstreamError> {
+    load_or_create_key(path, TEST_MASTER_PASSPHRASE)
 }
 
 #[test]
@@ -407,8 +475,10 @@ fn test_import_legacy_json() -> MyResult {
 
 #[test]
 fn test_find_redacts_secrets_unless_reveal_is_requested() -> MyResult {
-    let (_dir, key_path, vault_path) = temp_env();
+    let (dir, key_path, vault_path) = temp_env();
     let key = load_or_create_key_b64_from(&key_path)?;
+    let passphrase_file = tempfile::NamedTempFile::new_in(dir.path())?;
+    std::fs::write(passphrase_file.path(), TEST_MASTER_PASSPHRASE)?;
     let mut credential = sample_credential2();
     credential.password = "main-pass-S3cr3t".to_string();
     credential.security_questions[0].answer = "answer-one-S3cr3t".to_string();
@@ -434,6 +504,11 @@ fn test_find_redacts_secrets_unless_reveal_is_requested() -> MyResult {
             key_path.to_str().expect("temporary path is UTF-8"),
             "--input",
             vault_path.to_str().expect("temporary path is UTF-8"),
+            "--master-passphrase-file",
+            passphrase_file
+                .path()
+                .to_str()
+                .expect("temporary path is UTF-8"),
         ]);
         if json {
             command.arg("--json");
@@ -460,6 +535,11 @@ fn test_find_redacts_secrets_unless_reveal_is_requested() -> MyResult {
                 "--input",
                 vault_path.to_str().expect("temporary path is UTF-8"),
                 "--reveal",
+                "--master-passphrase-file",
+                passphrase_file
+                    .path()
+                    .to_str()
+                    .expect("temporary path is UTF-8"),
             ])
             .args(if json { vec!["--json"] } else { vec![] })
             .output()?;

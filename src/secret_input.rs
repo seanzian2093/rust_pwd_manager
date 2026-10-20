@@ -71,6 +71,48 @@ pub fn resolve_secret(
     Ok(value)
 }
 
+/// Reads the vault master passphrase without echoing it to the terminal.
+///
+/// New key files and legacy-key upgrades ask for confirmation when using a
+/// prompt. A protected passphrase file is an explicit non-interactive choice
+/// and is read only once.
+pub fn resolve_master_passphrase(
+    passphrase_file: Option<&Path>,
+    confirm: bool,
+) -> Result<Zeroizing<String>, UpstreamError> {
+    let passphrase = match passphrase_file {
+        Some(path) => read_secret_file(path)?,
+        None => Zeroizing::new(
+            rpassword::prompt_password("Master passphrase: ")
+                .map_err(|e| UpstreamError::Other(format!("Prompt failed: {}", e)))?,
+        ),
+    };
+    if passphrase.is_empty() {
+        return Err(UpstreamError::Other(
+            "Master passphrase must not be empty".to_string(),
+        ));
+    }
+    if confirm && passphrase.chars().count() < 12 {
+        return Err(UpstreamError::Other(
+            "New master passphrase must be at least 12 characters".to_string(),
+        ));
+    }
+
+    if confirm && passphrase_file.is_none() {
+        let confirmation = Zeroizing::new(
+            rpassword::prompt_password("Confirm master passphrase: ")
+                .map_err(|e| UpstreamError::Other(format!("Prompt failed: {}", e)))?,
+        );
+        if *passphrase != *confirmation {
+            return Err(UpstreamError::Other(
+                "Master passphrases did not match".to_string(),
+            ));
+        }
+    }
+
+    Ok(passphrase)
+}
+
 /// Reads `KEY=VALUE` lines from `path`, skipping blanks and `#` comments.
 ///
 /// Each line has the same syntax as the corresponding command-line flag used to.

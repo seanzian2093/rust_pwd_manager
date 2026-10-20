@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fmt,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, ErrorKind},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 #[cfg(unix)]
@@ -23,9 +23,33 @@ use chacha20poly1305::{
 };
 
 use base64::{Engine as _, engine::general_purpose};
+use zeroize::{Zeroize, Zeroizing};
 
 /// XChaCha20-Poly1305 nonce size; prefixed to every ciphertext.
 const NONCE_LEN: usize = 24;
+const WRAPPED_KEY_MAGIC: &str = "PWD_MANAGER_WRAPPED_KEY_V1\n";
+const KEY_FILE_VERSION: u32 = 1;
+const ARGON2_MEMORY_KIB: u32 = 19 * 1024;
+const ARGON2_ITERATIONS: u32 = 2;
+const ARGON2_PARALLELISM: u32 = 1;
+const ARGON2_SALT_LEN: usize = 16;
+const DATA_KEY_LEN: usize = 32;
+
+#[derive(Serialize, Deserialize)]
+struct WrappedKeyHeader {
+    format_version: u32,
+    kdf: String,
+    memory_kib: u32,
+    iterations: u32,
+    parallelism: u32,
+    salt: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WrappedKeyFile {
+    header: WrappedKeyHeader,
+    wrapped_key: String,
+}
 
 #[derive(Debug)]
 pub enum UpstreamError {
@@ -139,23 +163,198 @@ pub(crate) fn ensure_owner_only<P: AsRef<Path>>(_path: P) -> Result<(), Upstream
     Ok(())
 }
 
-pub fn load_key_b64_from<P: AsRef<Path>>(path: P) -> Result<Key, UpstreamError> {
+fn key_from_bytes(bytes: &[u8]) -> Result<Key, UpstreamError> {
+    if bytes.len() != DATA_KEY_LEN {
+        return Err(UpstreamError::Other(format!(
+            "Decoded key length {} != {}",
+            bytes.len(),
+            DATA_KEY_LEN
+        )));
+    }
+    Key::try_from_iter(bytes.iter().copied())
+        .map_err(|e| UpstreamError::Other(format!("Invalid data key: {}", e)))
+}
+
+fn derive_wrapping_key(
+    passphrase: &str,
+    header: &WrappedKeyHeader,
+) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>, UpstreamError> {
+    if header.format_version != KEY_FILE_VERSION
+        || header.kdf != "argon2id"
+        || header.memory_kib != ARGON2_MEMORY_KIB
+        || header.iterations != ARGON2_ITERATIONS
+        || header.parallelism != ARGON2_PARALLELISM
+    {
+        return Err(UpstreamError::Other(
+            "Unsupported wrapped-key format or Argon2 parameters".to_string(),
+        ));
+    }
+
+    let salt = general_purpose::STANDARD
+        .decode(&header.salt)
+        .map_err(|e| UpstreamError::Other(format!("Invalid key-file salt: {}", e)))?;
+    if salt.len() != ARGON2_SALT_LEN {
+        return Err(UpstreamError::Other(format!(
+            "Invalid key-file salt length: {}",
+            salt.len()
+        )));
+    }
+
+    let params = argon2::Params::new(
+        ARGON2_MEMORY_KIB,
+        ARGON2_ITERATIONS,
+        ARGON2_PARALLELISM,
+        Some(DATA_KEY_LEN),
+    )
+    .map_err(|e| UpstreamError::Other(format!("Invalid Argon2 parameters: {}", e)))?;
+    let argon2 = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+    let mut wrapping_key = Zeroizing::new([0; DATA_KEY_LEN]);
+    argon2
+        .hash_password_into(passphrase.as_bytes(), &salt, &mut *wrapping_key)
+        .map_err(|e| UpstreamError::Other(format!("Argon2 key derivation failed: {}", e)))?;
+    Ok(wrapping_key)
+}
+
+fn new_wrapped_key_file(key: &Key, passphrase: &str) -> Result<Vec<u8>, UpstreamError> {
+    if passphrase.chars().count() < 12 {
+        return Err(UpstreamError::Other(
+            "New master passphrase must be at least 12 characters".to_string(),
+        ));
+    }
+    let random = XNonce::try_generate()
+        .map_err(|e| UpstreamError::Other(format!("Salt generation error: {}", e)))?;
+    let header = WrappedKeyHeader {
+        format_version: KEY_FILE_VERSION,
+        kdf: "argon2id".to_string(),
+        memory_kib: ARGON2_MEMORY_KIB,
+        iterations: ARGON2_ITERATIONS,
+        parallelism: ARGON2_PARALLELISM,
+        salt: general_purpose::STANDARD.encode(&random.as_slice()[..ARGON2_SALT_LEN]),
+    };
+
+    let wrapping_key = derive_wrapping_key(passphrase, &header)?;
+    let aad = serde_json::to_vec(&header)
+        .map_err(|e| UpstreamError::Other(format!("Key header serialization failed: {}", e)))?;
+    let mut wrapping_key = Key::try_from_iter(wrapping_key.iter().copied())
+        .map_err(|e| UpstreamError::Other(format!("Invalid derived wrapping key: {}", e)))?;
+    let encrypted = encrypt_envelope(&wrapping_key, &aad, key.as_slice());
+    wrapping_key.as_mut_slice().zeroize();
+    let wrapped_key = encrypted?;
+
+    let key_file = WrappedKeyFile {
+        header,
+        wrapped_key: general_purpose::STANDARD.encode(wrapped_key),
+    };
+    let mut contents = WRAPPED_KEY_MAGIC.as_bytes().to_vec();
+    serde_json::to_writer(&mut contents, &key_file)
+        .map_err(|e| UpstreamError::Other(format!("Key file serialization failed: {}", e)))?;
+    contents.push(b'\n');
+    Ok(contents)
+}
+
+fn unlock_wrapped_key(contents: &str, passphrase: &str) -> Result<Key, UpstreamError> {
+    let payload = contents
+        .strip_prefix(WRAPPED_KEY_MAGIC)
+        .ok_or_else(|| UpstreamError::Other("Key file is not an Argon2-wrapped key".to_string()))?;
+    let key_file: WrappedKeyFile = serde_json::from_str(payload)
+        .map_err(|e| UpstreamError::Other(format!("Invalid wrapped-key file: {}", e)))?;
+    let wrapping_key = derive_wrapping_key(passphrase, &key_file.header)?;
+    let aad = serde_json::to_vec(&key_file.header)
+        .map_err(|e| UpstreamError::Other(format!("Key header serialization failed: {}", e)))?;
+    let envelope = general_purpose::STANDARD
+        .decode(&key_file.wrapped_key)
+        .map_err(|e| UpstreamError::Other(format!("Invalid wrapped data key: {}", e)))?;
+    let mut wrapping_key = Key::try_from_iter(wrapping_key.iter().copied())
+        .map_err(|e| UpstreamError::Other(format!("Invalid derived wrapping key: {}", e)))?;
+    let decrypted = decrypt_envelope(&wrapping_key, &aad, &envelope);
+    wrapping_key.as_mut_slice().zeroize();
+    let data_key = decrypted?;
+    key_from_bytes(&data_key)
+}
+
+fn replace_secret_file<P: AsRef<Path>>(path: P, contents: &[u8]) -> Result<(), UpstreamError> {
+    use std::io::Write;
+
+    let path = path.as_ref();
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(contents)?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|e| UpstreamError::IO(e.error))?;
+    Ok(())
+}
+
+fn lock_key_file<P: AsRef<Path>>(path: P) -> Result<File, UpstreamError> {
+    let path = path.as_ref();
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+
+    let mut lock_path = PathBuf::from(path);
+    let mut lock_name = lock_path
+        .file_name()
+        .ok_or_else(|| UpstreamError::Other("Key file path has no filename".to_string()))?
+        .to_os_string();
+    lock_name.push(".lock");
+    lock_path.set_file_name(lock_name);
+
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let lock = options.open(&lock_path)?;
+    ensure_owner_only(&lock_path)?;
+    lock.lock()?;
+    Ok(lock)
+}
+
+/// Returns whether using this key path requires first-time passphrase confirmation.
+/// Legacy base64 key files are upgraded in place on first successful unlock.
+pub fn key_file_requires_confirmation<P: AsRef<Path>>(path: P) -> Result<bool, UpstreamError> {
+    let path = path.as_ref();
+    let _lock = lock_key_file(path)?;
+    if !path.exists() {
+        return Ok(true);
+    }
+    ensure_owner_only(path)?;
+    let contents = fs::read_to_string(path)?;
+    Ok(!contents.starts_with(WRAPPED_KEY_MAGIC))
+}
+
+fn unlock_or_upgrade_key<P: AsRef<Path>>(path: P, passphrase: &str) -> Result<Key, UpstreamError> {
     let path_ref = path.as_ref();
+    ensure_owner_only(path_ref)?;
+    let contents = fs::read_to_string(path_ref)?;
+    if contents.starts_with(WRAPPED_KEY_MAGIC) {
+        return unlock_wrapped_key(&contents, passphrase);
+    }
+
+    let key_bytes = general_purpose::STANDARD
+        .decode(contents.trim())
+        .map_err(|e| UpstreamError::Other(format!("Invalid legacy key file: {}", e)))?;
+    let key = key_from_bytes(&key_bytes)?;
+    let wrapped_contents = new_wrapped_key_file(&key, passphrase)?;
+
+    // Do not replace a key file changed by another process while this one was
+    // deriving the wrapper. Unlock the winner's file instead.
+    if fs::read(path_ref)? != contents.as_bytes() {
+        return unlock_or_upgrade_key(path_ref, passphrase);
+    }
+    replace_secret_file(path_ref, &wrapped_contents)?;
+    Ok(key)
+}
+
+pub fn load_key_from<P: AsRef<Path>>(path: P, passphrase: &str) -> Result<Key, UpstreamError> {
+    let path_ref = path.as_ref();
+    let _lock = lock_key_file(path_ref)?;
     if path_ref.exists() {
-        ensure_owner_only(path_ref)?;
-        let b64 = fs::read_to_string(path_ref)?;
-        let key_bytes = general_purpose::STANDARD
-            .decode(b64.trim())
-            .map_err(|e| UpstreamError::Other(format!("Base64 decode error: {}", e)))?;
-        if key_bytes.len() != 32 {
-            return Err(UpstreamError::Other(format!(
-                "Decoded key length {} != 32",
-                key_bytes.len()
-            )));
-        }
-        let key_ref = Key::try_from_iter(key_bytes)
-            .map_err(|e| UpstreamError::Other(format!("Key::try_from_iter error: {}", e)))?;
-        Ok(key_ref)
+        unlock_or_upgrade_key(path_ref, passphrase)
     } else {
         Err(UpstreamError::Other(format!(
             "{} does not exist",
@@ -164,28 +363,21 @@ pub fn load_key_b64_from<P: AsRef<Path>>(path: P) -> Result<Key, UpstreamError> 
     }
 }
 
-pub fn load_or_create_key_b64_from<P: AsRef<Path>>(path: P) -> Result<Key, UpstreamError> {
+pub fn load_or_create_key<P: AsRef<Path>>(path: P, passphrase: &str) -> Result<Key, UpstreamError> {
     let path_ref = path.as_ref();
+    let _lock = lock_key_file(path_ref)?;
     if path_ref.exists() {
-        ensure_owner_only(path_ref)?;
-        let b64 = fs::read_to_string(path_ref)?;
-        let key_bytes = general_purpose::STANDARD
-            .decode(b64.trim())
-            .map_err(|e| UpstreamError::Other(format!("Base64 decode error: {}", e)))?;
-        if key_bytes.len() != 32 {
-            return Err(UpstreamError::Other(format!(
-                "Decoded key length {} != 32",
-                key_bytes.len()
-            )));
-        }
-        let key_ref = Key::try_from_iter(key_bytes)
-            .map_err(|e| UpstreamError::Other(format!("Key::try_from_iter error: {}", e)))?;
-        Ok(key_ref)
+        unlock_or_upgrade_key(path_ref, passphrase)
     } else {
         let key = Key::try_generate().map_err(|e| UpstreamError::Other(format!("{}", e)))?;
-        let b64 = general_purpose::STANDARD.encode(key);
-        write_new_secret_file(path_ref, b64.as_bytes())?;
-        Ok(key)
+        let contents = new_wrapped_key_file(&key, passphrase)?;
+        match write_new_secret_file(path_ref, &contents) {
+            Ok(()) => Ok(key),
+            Err(UpstreamError::IO(e)) if e.kind() == ErrorKind::AlreadyExists => {
+                unlock_or_upgrade_key(path_ref, passphrase)
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
