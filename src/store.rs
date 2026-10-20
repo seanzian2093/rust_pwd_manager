@@ -69,6 +69,43 @@ impl Store {
         Ok(())
     }
 
+    /// Inserts a batch only if none of its account keys already exist.
+    ///
+    /// All records commit together, so an import cannot leave a partially
+    /// written vault if an account conflicts or a storage operation fails.
+    pub fn insert_many(&self, entries: &[(String, Vec<u8>)]) -> Result<(), UpstreamError> {
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| UpstreamError::Store(e.into()))?;
+        {
+            let mut table = txn
+                .open_table(TABLE)
+                .map_err(|e| UpstreamError::Store(e.into()))?;
+
+            for (account_key, _) in entries {
+                if table
+                    .get(account_key.as_str())
+                    .map_err(|e| UpstreamError::Store(e.into()))?
+                    .is_some()
+                {
+                    return Err(UpstreamError::Other(format!(
+                        "Account already exists in destination vault: {}",
+                        account_key
+                    )));
+                }
+            }
+
+            for (account_key, envelope) in entries {
+                table
+                    .insert(account_key.as_str(), envelope.as_slice())
+                    .map_err(|e| UpstreamError::Store(e.into()))?;
+            }
+        }
+        txn.commit().map_err(|e| UpstreamError::Store(e.into()))?;
+        Ok(())
+    }
+
     /// Returns the raw envelope bytes for `account_key`, if present.
     pub fn get(&self, account_key: &str) -> Result<Option<Vec<u8>>, UpstreamError> {
         let txn = self

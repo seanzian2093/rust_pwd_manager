@@ -163,6 +163,10 @@ pub enum Commands {
         #[arg(long = "legacy-input", value_name = "FILE")]
         legacy_input: String,
 
+        /// Path to the legacy shared-nonce file, required for the earliest JSON format
+        #[arg(long = "legacy-nonce-file", value_name = "FILE")]
+        legacy_nonce_file: Option<String>,
+
         /// Read the vault master passphrase from an owner-only file
         #[arg(long = "master-passphrase-file", value_name = "PATH")]
         master_passphrase_file: Option<String>,

@@ -473,11 +473,48 @@ pub fn decrypt_credential(
 
 // ---------- legacy per-field format (read-only, used by `import_legacy_json`) ----------
 
+fn legacy_decrypt_text(
+    key: &Key,
+    ciphertext_b64: &str,
+    fixed_nonce: Option<&XNonce>,
+) -> Result<String, UpstreamError> {
+    let ciphertext = general_purpose::STANDARD
+        .decode(ciphertext_b64)
+        .map_err(|e| UpstreamError::Other(format!("Invalid legacy ciphertext: {}", e)))?;
+
+    if ciphertext.len() > NONCE_LEN
+        && let Ok(plaintext) = decrypt_envelope(key, b"", &ciphertext)
+    {
+        return String::from_utf8(plaintext).map_err(|e| {
+            UpstreamError::Other(format!("Legacy plaintext is not valid UTF-8: {}", e))
+        });
+    }
+
+    if let Some(nonce) = fixed_nonce {
+        let cipher = XChaCha20Poly1305::new(key);
+        let plaintext = cipher.decrypt(nonce, ciphertext.as_ref()).map_err(|_| {
+            UpstreamError::Other(
+                "Legacy ciphertext could not be decrypted; check the key and legacy nonce"
+                    .to_string(),
+            )
+        })?;
+        return String::from_utf8(plaintext).map_err(|e| {
+            UpstreamError::Other(format!("Legacy plaintext is not valid UTF-8: {}", e))
+        });
+    }
+
+    Err(UpstreamError::Other(
+        "Legacy ciphertext could not be decrypted; provide --legacy-nonce-file for an older JSON vault"
+            .to_string(),
+    ))
+}
+
 fn legacy_decrypt_security_question(
     key: &Key,
     q: &SecurityQuestion,
+    fixed_nonce: Option<&XNonce>,
 ) -> Result<SecurityQuestion, UpstreamError> {
-    let answer = decrypt_text(key, &q.answer)?;
+    let answer = legacy_decrypt_text(key, &q.answer, fixed_nonce)?;
 
     Ok(SecurityQuestion {
         question: q.question.clone(),
@@ -488,8 +525,9 @@ fn legacy_decrypt_security_question(
 fn legacy_decrypt_sub_credential(
     key: &Key,
     s: &SubCredential,
+    fixed_nonce: Option<&XNonce>,
 ) -> Result<SubCredential, UpstreamError> {
-    let password = decrypt_text(key, &s.password)?;
+    let password = legacy_decrypt_text(key, &s.password, fixed_nonce)?;
 
     Ok(SubCredential {
         cred_name: s.cred_name.clone(),
@@ -498,20 +536,24 @@ fn legacy_decrypt_sub_credential(
 }
 
 /// Decrypts a credential stored in the old per-field JSON format.
-fn legacy_decrypt_cred(key: &Key, cred: &Credential) -> Result<Credential, UpstreamError> {
-    let user_name = decrypt_text(key, &cred.user_name)?;
-    let password = decrypt_text(key, &cred.password)?;
+fn legacy_decrypt_cred(
+    key: &Key,
+    cred: &Credential,
+    fixed_nonce: Option<&XNonce>,
+) -> Result<Credential, UpstreamError> {
+    let user_name = legacy_decrypt_text(key, &cred.user_name, fixed_nonce)?;
+    let password = legacy_decrypt_text(key, &cred.password, fixed_nonce)?;
 
     let security_questions = cred
         .security_questions
         .iter()
-        .map(|q| legacy_decrypt_security_question(key, q))
+        .map(|q| legacy_decrypt_security_question(key, q, fixed_nonce))
         .collect::<Result<Vec<_>, _>>()?;
 
     let sub_credentials = cred
         .sub_credentials
         .iter()
-        .map(|s| legacy_decrypt_sub_credential(key, s))
+        .map(|s| legacy_decrypt_sub_credential(key, s, fixed_nonce))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Credential {
@@ -531,16 +573,11 @@ fn norm_key(s: &str) -> String {
 fn legacy_read_map_from_json<P: AsRef<Path>>(
     path: P,
 ) -> Result<BTreeMap<String, Credential>, UpstreamError> {
-    match fs::File::open(&path) {
-        Ok(file) => {
-            let reader = io::BufReader::new(file);
-            let map = serde_json::from_reader::<_, BTreeMap<String, Credential>>(reader)
-                .map_err(|e| UpstreamError::Other(format!("Error reading from file: {}", e)))?;
-            Ok(map)
-        }
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(BTreeMap::new()),
-        Err(err) => Err(err.into()),
-    }
+    ensure_owner_only(&path)?;
+    let file = fs::File::open(&path)?;
+    let reader = io::BufReader::new(file);
+    serde_json::from_reader::<_, BTreeMap<String, Credential>>(reader)
+        .map_err(|e| UpstreamError::Other(format!("Error reading legacy JSON: {}", e)))
 }
 
 // Upsert (add or replace) a credential under its normalized account name key
@@ -619,15 +656,79 @@ pub fn import_legacy_json<P: AsRef<Path>, Q: AsRef<Path>>(
     key: &Key,
     vault_path: Q,
 ) -> Result<usize, UpstreamError> {
-    let legacy_map = legacy_read_map_from_json(legacy_json_path)?;
-    let store = store::Store::open(vault_path)?;
+    import_legacy_json_with_nonce(legacy_json_path, key, None::<&Path>, vault_path)
+}
 
-    let mut count = 0;
-    for (account_key, legacy_cred) in legacy_map {
-        let plain = legacy_decrypt_cred(key, &legacy_cred)?;
-        let envelope = encrypt_credential(key, &account_key, &plain)?;
-        store.put(&account_key, &envelope)?;
-        count += 1;
+/// Imports an older legacy JSON store whose per-field ciphertexts use a
+/// shared, separately stored XChaCha20 nonce.
+pub fn import_legacy_json_with_nonce<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(
+    legacy_json_path: P,
+    key: &Key,
+    nonce_path: Option<R>,
+    vault_path: Q,
+) -> Result<usize, UpstreamError> {
+    let legacy_path = legacy_json_path.as_ref();
+    let vault_path = vault_path.as_ref();
+    let legacy_canonical = legacy_path.canonicalize()?;
+    if vault_path.exists() && legacy_canonical == vault_path.canonicalize()? {
+        return Err(UpstreamError::Other(
+            "Legacy JSON input and destination vault must be different files".to_string(),
+        ));
     }
-    Ok(count)
+
+    let legacy_map = legacy_read_map_from_json(legacy_json_path)?;
+    let fixed_nonce = match nonce_path {
+        Some(path) => {
+            ensure_owner_only(&path)?;
+            let encoded = fs::read_to_string(path)?;
+            let bytes = general_purpose::STANDARD
+                .decode(encoded.trim())
+                .map_err(|e| UpstreamError::Other(format!("Invalid legacy nonce file: {}", e)))?;
+            if bytes.len() != NONCE_LEN {
+                return Err(UpstreamError::Other(format!(
+                    "Legacy nonce must be {} bytes, got {}",
+                    NONCE_LEN,
+                    bytes.len()
+                )));
+            }
+            Some(
+                XNonce::try_from_iter(bytes)
+                    .map_err(|e| UpstreamError::Other(format!("Invalid legacy nonce: {}", e)))?,
+            )
+        }
+        None => None,
+    };
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut entries = Vec::with_capacity(legacy_map.len());
+    for (account_key, legacy_cred) in legacy_map {
+        let normalized_key = norm_key(&legacy_cred.account_name);
+        if legacy_cred.account_name.trim().is_empty() || account_key != normalized_key {
+            return Err(UpstreamError::Other(format!(
+                "Legacy account key {:?} does not match account name {:?}",
+                account_key, legacy_cred.account_name
+            )));
+        }
+        if !seen.insert(normalized_key.clone()) {
+            return Err(UpstreamError::Other(format!(
+                "Multiple legacy records normalize to account key: {}",
+                normalized_key
+            )));
+        }
+        let plain = legacy_decrypt_cred(key, &legacy_cred, fixed_nonce.as_ref()).map_err(|e| {
+            UpstreamError::Other(format!(
+                "Failed to decrypt legacy account '{}': {}",
+                normalized_key, e
+            ))
+        })?;
+        let envelope = encrypt_credential(key, &normalized_key, &plain)?;
+        entries.push((normalized_key, envelope));
+    }
+
+    if entries.is_empty() {
+        return Ok(0);
+    }
+
+    store::Store::open(vault_path)?.insert_many(&entries)?;
+    Ok(entries.len())
 }

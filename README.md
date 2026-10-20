@@ -32,3 +32,26 @@ pwd_manager find outlook --reveal
 
 The command prompts for the master passphrase. Without `--reveal`, secret values remain
 redacted in the output.
+
+## Importing a legacy JSON vault
+
+Back up the legacy JSON file, key file, and (for older vaults) nonce file before importing.
+The import keeps the same data key and writes new whole-document encrypted records into a
+separate redb vault. It refuses to overwrite accounts already present in the destination;
+the batch is committed atomically, so a conflict or invalid legacy record imports nothing.
+
+For a legacy JSON vault that used a shared `nonce.txt`:
+
+```sh
+pwd_manager import \
+  --legacy-input ./data/output/credentials.json \
+  --legacy-nonce-file ./data/input/nonce.txt \
+  --key-file ./data/input/key.txt \
+  --output ./data/output/vault.redb
+```
+
+For a newer legacy JSON vault whose encrypted fields each contain their own nonce, omit
+`--legacy-nonce-file`. On first use, a raw base64 key file is upgraded in place to the
+passphrase-wrapped format without changing the data key. Use `--master-passphrase-file PATH`
+for non-interactive use; the file must be owner-only and contains the passphrase in plaintext.
+Keep the backups until you have verified the imported accounts with `find`.

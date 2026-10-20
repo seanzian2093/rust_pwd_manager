@@ -74,6 +74,24 @@ fn b64_decode(s: &str) -> Vec<u8> {
     general_purpose::STANDARD.decode(s).expect("valid base64")
 }
 
+fn encrypt_legacy_fixed_nonce(
+    key: &chacha20poly1305::Key,
+    nonce: &chacha20poly1305::XNonce,
+    plaintext: &[u8],
+) -> String {
+    use chacha20poly1305::{
+        XChaCha20Poly1305,
+        aead::{Aead, KeyInit},
+    };
+
+    let cipher = XChaCha20Poly1305::new(key);
+    b64_encode(
+        &cipher
+            .encrypt(nonce, plaintext)
+            .expect("test encryption succeeds"),
+    )
+}
+
 // ---------- key handling ----------
 
 #[test]
@@ -470,6 +488,153 @@ fn test_import_legacy_json() -> MyResult {
     assert_eq!(found.security_questions[0].answer, "Sean Z");
     assert_eq!(found.sub_credentials[0].password, "password1");
 
+    Ok(())
+}
+
+#[test]
+fn test_import_legacy_json_with_shared_nonce_via_cli() -> MyResult {
+    let (dir, key_path, vault_path) = temp_env();
+    let key_bytes = [42u8; 32];
+    std::fs::write(&key_path, b64_encode(&key_bytes))?;
+    let key = chacha20poly1305::Key::try_from_iter(key_bytes)
+        .map_err(|e| UpstreamError::Other(e.to_string()))?;
+    let nonce_bytes = [17u8; 24];
+    let nonce = chacha20poly1305::XNonce::try_from_iter(nonce_bytes)
+        .map_err(|e| UpstreamError::Other(e.to_string()))?;
+
+    let legacy_credential = Credential {
+        account_name: "LegacyAccount".to_string(),
+        user_name: encrypt_legacy_fixed_nonce(&key, &nonce, b"legacy-user"),
+        password: encrypt_legacy_fixed_nonce(&key, &nonce, b"legacy-password"),
+        security_questions: vec![SecurityQuestion {
+            question: "First school?".to_string(),
+            answer: encrypt_legacy_fixed_nonce(&key, &nonce, b"legacy-answer"),
+        }],
+        sub_credentials: vec![SubCredential {
+            cred_name: "mail".to_string(),
+            password: encrypt_legacy_fixed_nonce(&key, &nonce, b"legacy-mail-password"),
+        }],
+    };
+    let legacy_json = dir.path().join("legacy.json");
+    let legacy_map =
+        std::collections::BTreeMap::from([("legacyaccount".to_string(), legacy_credential)]);
+    std::fs::write(&legacy_json, serde_json::to_vec(&legacy_map).unwrap())?;
+
+    let nonce_file = dir.path().join("legacy_nonce.txt");
+    std::fs::write(&nonce_file, b64_encode(&nonce_bytes))?;
+    let passphrase_file = dir.path().join("master_passphrase.txt");
+    std::fs::write(&passphrase_file, TEST_MASTER_PASSPHRASE)?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_pwd_manager"))
+        .args([
+            "import",
+            "--legacy-input",
+            legacy_json.to_str().expect("temporary path is UTF-8"),
+            "--legacy-nonce-file",
+            nonce_file.to_str().expect("temporary path is UTF-8"),
+            "--master-passphrase-file",
+            passphrase_file.to_str().expect("temporary path is UTF-8"),
+            "--key-file",
+            key_path.to_str().expect("temporary path is UTF-8"),
+            "--output",
+            vault_path.to_str().expect("temporary path is UTF-8"),
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "import command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Imported 1 credential"));
+
+    let unlocked_key = load_key_from(&key_path, TEST_MASTER_PASSPHRASE)?;
+    let imported = find_and_decrypt("LegacyAccount", &unlocked_key, &vault_path)?;
+    assert_eq!(imported.user_name, "legacy-user");
+    assert_eq!(imported.password, "legacy-password");
+    assert_eq!(imported.security_questions[0].answer, "legacy-answer");
+    assert_eq!(imported.sub_credentials[0].password, "legacy-mail-password");
+
+    Ok(())
+}
+
+#[test]
+fn test_import_legacy_json_does_not_overwrite_existing_records() -> MyResult {
+    let (_dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_key_b64_from(&key_path)?;
+    let existing = sample_credential();
+    upsert_credential(&vault_path, &key, &existing)?;
+
+    let mut legacy_map = std::collections::BTreeMap::new();
+    for name in ["RustRover", "NewAccount"] {
+        let mut credential = sample_credential();
+        credential.account_name = name.to_string();
+        credential.user_name = encrypt_text(&key, b"legacy-user")?;
+        credential.password = encrypt_text(&key, b"legacy-password")?;
+        legacy_map.insert(name.to_ascii_lowercase(), credential);
+    }
+    let legacy_path = _dir.path().join("legacy.json");
+    std::fs::write(&legacy_path, serde_json::to_vec(&legacy_map).unwrap())?;
+
+    assert!(import_legacy_json(&legacy_path, &key, &vault_path).is_err());
+    assert_eq!(
+        find_and_decrypt("RustRover", &key, &vault_path)?.password,
+        existing.password
+    );
+    assert!(find_and_decrypt("NewAccount", &key, &vault_path).is_err());
+
+    Ok(())
+}
+
+#[test]
+fn test_import_legacy_json_missing_file_errors() -> MyResult {
+    let (_dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_key_b64_from(&key_path)?;
+    let missing = _dir.path().join("missing.json");
+    assert!(import_legacy_json(&missing, &key, &vault_path).is_err());
+    assert!(!vault_path.exists());
+    Ok(())
+}
+
+#[test]
+fn test_import_legacy_json_malformed_input_does_not_create_vault() -> MyResult {
+    let (_dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_key_b64_from(&key_path)?;
+    let legacy_path = _dir.path().join("legacy.json");
+    std::fs::write(&legacy_path, "{invalid json")?;
+
+    assert!(import_legacy_json(&legacy_path, &key, &vault_path).is_err());
+    assert!(!vault_path.exists());
+    Ok(())
+}
+
+#[test]
+fn test_import_legacy_json_wrong_key_does_not_create_vault() -> MyResult {
+    let (_dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_key_b64_from(&key_path)?;
+    let mut legacy_credential = sample_credential();
+    legacy_credential.user_name = encrypt_text(&key, b"legacy-user")?;
+    legacy_credential.password = encrypt_text(&key, b"legacy-password")?;
+    let legacy_map =
+        std::collections::BTreeMap::from([("rustrover".to_string(), legacy_credential)]);
+    let legacy_path = _dir.path().join("legacy.json");
+    std::fs::write(&legacy_path, serde_json::to_vec(&legacy_map).unwrap())?;
+
+    let wrong_key_path = _dir.path().join("wrong-key.txt");
+    let wrong_key = load_or_create_key_b64_from(&wrong_key_path)?;
+    assert!(import_legacy_json(&legacy_path, &wrong_key, &vault_path).is_err());
+    assert!(!vault_path.exists());
+    Ok(())
+}
+
+#[test]
+fn test_import_legacy_json_rejects_same_input_and_output() -> MyResult {
+    let (_dir, key_path, _) = temp_env();
+    let key = load_or_create_key_b64_from(&key_path)?;
+    let legacy_path = _dir.path().join("legacy.json");
+    std::fs::write(&legacy_path, "{}")?;
+
+    assert!(import_legacy_json(&legacy_path, &key, &legacy_path).is_err());
+    assert_eq!(std::fs::read_to_string(&legacy_path)?, "{}");
     Ok(())
 }
 

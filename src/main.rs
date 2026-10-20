@@ -4,8 +4,8 @@ use clap::Parser;
 use pwd_manager::{
     Credential, UpstreamError,
     cli::{Cli, Commands},
-    delete_credential, find_and_decrypt, import_legacy_json, key_file_requires_confirmation,
-    list_accounts, load_key_from, load_or_create_key,
+    delete_credential, find_and_decrypt, import_legacy_json_with_nonce,
+    key_file_requires_confirmation, list_accounts, load_key_from, load_or_create_key,
     secret_input::{
         SecretSource, read_security_questions, read_sub_credentials, resolve_master_passphrase,
         resolve_secret,
@@ -150,12 +150,18 @@ fn run() -> Result<(), UpstreamError> {
         }
         Commands::Import {
             legacy_input,
+            legacy_nonce_file,
             master_passphrase_file,
             key_file,
             output,
         } => {
             let key = unlock_key_file(&key_file, false, master_passphrase_file.as_deref())?;
-            let count = import_legacy_json(&legacy_input, &key, &output)?;
+            let count = import_legacy_json_with_nonce(
+                &legacy_input,
+                &key,
+                legacy_nonce_file.as_deref().map(Path::new),
+                &output,
+            )?;
             println!("Imported {} credential(s) into {}", count, output);
         }
         Commands::Update {
