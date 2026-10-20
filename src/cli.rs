@@ -240,6 +240,39 @@ pub enum Commands {
         key_file: String,
     },
 
+    /// Create an owner-only backup of an existing vault
+    Backup {
+        /// Path to the vault file to back up
+        #[arg(
+            short = 'i',
+            long = "input",
+            value_name = "FILE",
+            default_value = "data/output/vault.redb"
+        )]
+        input: String,
+
+        /// New backup file path; existing files are never overwritten
+        #[arg(long = "output", value_name = "FILE", required = true)]
+        output: String,
+    },
+
+    /// Restore a vault backup to a new file
+    Restore {
+        /// Path to the backup file
+        #[arg(long = "input", value_name = "FILE", required = true)]
+        input: String,
+
+        /// New vault file path; existing files are never overwritten
+        #[arg(long = "output", value_name = "FILE", required = true)]
+        output: String,
+    },
+
+    /// Vault maintenance operations
+    Maintenance {
+        #[command(subcommand)]
+        command: MaintenanceCommands,
+    },
+
     /// Update credential fields; unspecified fields remain unchanged
     Update {
         account: String,
@@ -283,5 +316,20 @@ pub enum Commands {
             default_value = "data/input/key.txt"
         )]
         key_file: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MaintenanceCommands {
+    /// Compact a vault to reclaim space from deleted or replaced records
+    Compact {
+        /// Path to the vault file
+        #[arg(
+            short = 'i',
+            long = "input",
+            value_name = "FILE",
+            default_value = "data/output/vault.redb"
+        )]
+        input: String,
     },
 }

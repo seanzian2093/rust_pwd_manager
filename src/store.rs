@@ -7,6 +7,7 @@
 
 use std::{
     fs::{self, File, OpenOptions},
+    io,
     path::Path,
 };
 
@@ -18,6 +19,57 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableErro
 use crate::{UpstreamError, ensure_owner_only};
 
 const TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("credentials");
+
+fn existing_database(path: &Path) -> Result<Database, UpstreamError> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(UpstreamError::Other(format!(
+            "Not a valid vault file: {}",
+            path.display()
+        )));
+    }
+    ensure_owner_only(path)?;
+    Database::open(path).map_err(|e| UpstreamError::Store(e.into()))
+}
+
+fn copy_database_to_new_file(source: &Path, destination: &Path) -> Result<(), UpstreamError> {
+    let _database = existing_database(source)?;
+    if destination.exists() {
+        return Err(UpstreamError::Other(format!(
+            "Destination already exists: {}",
+            destination.display()
+        )));
+    }
+    if let Some(parent) = destination.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut source_file = File::open(source)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut destination_file = options.open(destination)?;
+
+    let copy_result =
+        io::copy(&mut source_file, &mut destination_file).and_then(|_| destination_file.sync_all());
+    if let Err(copy_error) = copy_result {
+        drop(destination_file);
+        return match fs::remove_file(destination) {
+            Ok(()) => Err(UpstreamError::IO(copy_error)),
+            Err(cleanup_error) => Err(UpstreamError::Other(format!(
+                "Copy failed: {}; could not remove incomplete file {}: {}",
+                copy_error,
+                destination.display(),
+                cleanup_error
+            ))),
+        };
+    }
+
+    Ok(())
+}
 
 pub struct Store {
     db: Database,
@@ -49,6 +101,30 @@ impl Store {
             .create_file(file)
             .map_err(|e| UpstreamError::Store(e.into()))?;
         Ok(Store { db })
+    }
+
+    /// Creates an owner-only copy of an existing vault without overwriting files.
+    pub fn backup<P: AsRef<Path>, Q: AsRef<Path>>(
+        source: P,
+        destination: Q,
+    ) -> Result<(), UpstreamError> {
+        copy_database_to_new_file(source.as_ref(), destination.as_ref())
+    }
+
+    /// Restores an owner-only copy of a vault to a new destination.
+    pub fn restore<P: AsRef<Path>, Q: AsRef<Path>>(
+        source: P,
+        destination: Q,
+    ) -> Result<(), UpstreamError> {
+        copy_database_to_new_file(source.as_ref(), destination.as_ref())
+    }
+
+    /// Compacts an existing vault, returning whether redb performed compaction.
+    pub fn compact<P: AsRef<Path>>(path: P) -> Result<bool, UpstreamError> {
+        let mut database = existing_database(path.as_ref())?;
+        database
+            .compact()
+            .map_err(|e| UpstreamError::Store(e.into()))
     }
 
     /// Inserts or replaces the envelope for `account_key`.

@@ -68,6 +68,56 @@ export is not an input to the legacy-only `import` command.
 Run `scripts/export_cred.sh ./data/output/credentials-export.json` for a script example.
 The destination must be new; the script refuses to overwrite an existing file.
 
+## Vault backup, restore, and compaction
+
+Create a backup at a new path with `backup`. The backup contains the encrypted vault, not
+the key file or master passphrase:
+
+```sh
+pwd_manager backup \
+  --input ./data/output/vault.redb \
+  --output ./backups/vault-2026-10-20.redb
+```
+
+Run backup and restore only when no other process is accessing the vault.
+
+Back up the wrapped key file separately using a trusted, protected location. The vault
+backup alone is not recoverable without the matching key file and master passphrase; storing
+all of them together removes much of the benefit of encryption. Backups should be stored on
+a separate device or otherwise protected from loss of the original.
+
+Restore copies a verified vault backup to a **new** path. It refuses to overwrite an
+existing destination:
+
+```sh
+pwd_manager restore \
+  --input ./backups/vault-2026-10-20.redb \
+  --output ./data/output/vault-restored.redb
+```
+
+Use the matching key and passphrase with `find` against the restored file to verify it.
+After verification, switch to it by stopping other vault users and carefully replacing the
+active file yourself, keeping the original and backup until the restored vault is confirmed.
+
+redb is copy-on-write, so the vault file can grow as credentials are changed or deleted.
+Compact the vault during a maintenance window, with no other process using it:
+
+```sh
+pwd_manager maintenance compact --input ./data/output/vault.redb
+```
+
+Compaction preserves records but rewrites the database and may take time. Create a backup
+before compacting if the data is important.
+The `scripts/demo_vault_maintenance.sh` script demonstrates backup, restore, and compaction
+in sequence. It leaves the backup and restored vault in place:
+
+```sh
+scripts/demo_vault_maintenance.sh
+```
+
+Optionally pass explicit backup and restored-vault paths. Override `VAULT_FILE` to use a
+different source vault or `PWD_MANAGER_BIN` to select another CLI executable.
+
 ## Importing a legacy JSON vault
 
 Back up the legacy JSON file, key file, and (for older vaults) nonce file before importing.

@@ -6,10 +6,11 @@ use std::{
 
 use clap::Parser;
 use pwd_manager::{
-    Credential, UpstreamError,
-    cli::{Cli, Commands},
-    delete_credential, export_credentials, find_and_decrypt, import_legacy_json_with_nonce,
-    key_file_requires_confirmation, list_accounts, load_key_from, load_or_create_key,
+    Credential, UpstreamError, backup_vault,
+    cli::{Cli, Commands, MaintenanceCommands},
+    compact_vault, delete_credential, export_credentials, find_and_decrypt,
+    import_legacy_json_with_nonce, key_file_requires_confirmation, list_accounts, load_key_from,
+    load_or_create_key, restore_vault,
     secret_input::{
         SecretSource, read_security_questions, read_sub_credentials, resolve_master_passphrase,
         resolve_secret,
@@ -267,6 +268,27 @@ fn run() -> Result<(), UpstreamError> {
             let count = export_credentials(&input, &key, &output)?;
             println!("Exported {} credential(s) to {}", count, output);
         }
+        Commands::Backup { input, output } => {
+            backup_vault(&input, &output)?;
+            println!("Backed up vault {} to {}", input, output);
+            eprintln!("Keep the backup separate from the key file and master passphrase.");
+        }
+        Commands::Restore { input, output } => {
+            restore_vault(&input, &output)?;
+            println!("Restored vault backup {} to {}", input, output);
+            eprintln!(
+                "Ensure the matching key file and master passphrase are available separately."
+            );
+        }
+        Commands::Maintenance { command } => match command {
+            MaintenanceCommands::Compact { input } => {
+                if compact_vault(&input)? {
+                    println!("Compacted vault: {}", input);
+                } else {
+                    println!("No further compaction was possible for vault: {}", input);
+                }
+            }
+        },
         Commands::Update {
             account,
             user_name,

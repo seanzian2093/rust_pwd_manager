@@ -649,6 +649,27 @@ pub fn list_accounts<P: AsRef<Path>>(vault_path: P) -> Result<Vec<String>, Upstr
     store::Store::open(vault_path)?.list_keys()
 }
 
+/// Creates an owner-only backup of an existing vault without overwriting files.
+pub fn backup_vault<P: AsRef<Path>, Q: AsRef<Path>>(
+    vault_path: P,
+    backup_path: Q,
+) -> Result<(), UpstreamError> {
+    store::Store::backup(vault_path, backup_path)
+}
+
+/// Restores a vault backup into a new owner-only file without overwriting files.
+pub fn restore_vault<P: AsRef<Path>, Q: AsRef<Path>>(
+    backup_path: P,
+    vault_path: Q,
+) -> Result<(), UpstreamError> {
+    store::Store::restore(backup_path, vault_path)
+}
+
+/// Compacts an existing vault and returns whether redb performed compaction.
+pub fn compact_vault<P: AsRef<Path>>(vault_path: P) -> Result<bool, UpstreamError> {
+    store::Store::compact(vault_path)
+}
+
 /// Exports every credential as plaintext JSON to a new owner-only file.
 ///
 /// Existing destination files are never overwritten. All records are decrypted

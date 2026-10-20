@@ -899,3 +899,148 @@ fn test_find_copies_only_selected_secret_to_clipboard() -> MyResult {
     assert_eq!(std::fs::read_to_string(capture_path)?, secret);
     Ok(())
 }
+
+#[test]
+fn test_backup_and_restore_cli_preserve_vault_and_reject_overwrite() -> MyResult {
+    let (dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_test_key(&key_path)?;
+    let mut credential = sample_credential2();
+    credential.password = "backup-round-trip-secret".to_string();
+    upsert_credential(&vault_path, &key, &credential)?;
+
+    let backup_path = dir.path().join("backups/vault.redb");
+    let backup = Command::new(env!("CARGO_BIN_EXE_pwd_manager"))
+        .args([
+            "backup",
+            "--input",
+            vault_path.to_str().expect("temporary path is UTF-8"),
+            "--output",
+            backup_path.to_str().expect("temporary path is UTF-8"),
+        ])
+        .output()?;
+    assert!(
+        backup.status.success(),
+        "backup command failed: {}",
+        String::from_utf8_lossy(&backup.stderr)
+    );
+    assert_eq!(
+        find_and_decrypt("RustRover", &key, &backup_path)?.password,
+        "backup-round-trip-secret"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&backup_path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    let restored_path = dir.path().join("restored.redb");
+    let restore = Command::new(env!("CARGO_BIN_EXE_pwd_manager"))
+        .args([
+            "restore",
+            "--input",
+            backup_path.to_str().expect("temporary path is UTF-8"),
+            "--output",
+            restored_path.to_str().expect("temporary path is UTF-8"),
+        ])
+        .output()?;
+    assert!(
+        restore.status.success(),
+        "restore command failed: {}",
+        String::from_utf8_lossy(&restore.stderr)
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&restored_path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+    assert_eq!(
+        find_and_decrypt("RustRover", &key, &restored_path)?.password,
+        "backup-round-trip-secret"
+    );
+
+    let overwrite = Command::new(env!("CARGO_BIN_EXE_pwd_manager"))
+        .args([
+            "backup",
+            "--input",
+            vault_path.to_str().expect("temporary path is UTF-8"),
+            "--output",
+            backup_path.to_str().expect("temporary path is UTF-8"),
+        ])
+        .output()?;
+    assert!(!overwrite.status.success());
+    assert_eq!(
+        find_and_decrypt("RustRover", &key, &backup_path)?.password,
+        "backup-round-trip-secret"
+    );
+
+    let restore_overwrite = Command::new(env!("CARGO_BIN_EXE_pwd_manager"))
+        .args([
+            "restore",
+            "--input",
+            backup_path.to_str().expect("temporary path is UTF-8"),
+            "--output",
+            restored_path.to_str().expect("temporary path is UTF-8"),
+        ])
+        .output()?;
+    assert!(!restore_overwrite.status.success());
+    assert_eq!(
+        find_and_decrypt("RustRover", &key, &restored_path)?.password,
+        "backup-round-trip-secret"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_backup_rejects_non_vault_source_without_creating_destination() -> MyResult {
+    let (dir, _, _) = temp_env();
+    let source = dir.path().join("not-a-vault.redb");
+    let destination = dir.path().join("backup.redb");
+    std::fs::write(&source, b"not a redb database")?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_pwd_manager"))
+        .args([
+            "backup",
+            "--input",
+            source.to_str().expect("temporary path is UTF-8"),
+            "--output",
+            destination.to_str().expect("temporary path is UTF-8"),
+        ])
+        .output()?;
+    assert!(!output.status.success());
+    assert!(!destination.exists());
+    Ok(())
+}
+
+#[test]
+fn test_compact_cli_preserves_vault_records() -> MyResult {
+    let (_dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_test_key(&key_path)?;
+    let original = sample_credential2();
+    upsert_credential(&vault_path, &key, &original)?;
+
+    let compact = Command::new(env!("CARGO_BIN_EXE_pwd_manager"))
+        .args([
+            "maintenance",
+            "compact",
+            "--input",
+            vault_path.to_str().expect("temporary path is UTF-8"),
+        ])
+        .output()?;
+    assert!(
+        compact.status.success(),
+        "compact command failed: {}",
+        String::from_utf8_lossy(&compact.stderr)
+    );
+    let found = find_and_decrypt("RustRover", &key, &vault_path)?;
+    assert_eq!(found.user_name, original.user_name);
+    assert_eq!(found.password, original.password);
+    assert_eq!(
+        found.security_questions.len(),
+        original.security_questions.len()
+    );
+    assert_eq!(found.sub_credentials.len(), original.sub_credentials.len());
+    Ok(())
+}
