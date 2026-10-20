@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::Command;
 
 use pwd_manager::*;
 use tempfile::TempDir;
@@ -400,6 +401,78 @@ fn test_import_legacy_json() -> MyResult {
     assert_eq!(found.password, "password");
     assert_eq!(found.security_questions[0].answer, "Sean Z");
     assert_eq!(found.sub_credentials[0].password, "password1");
+
+    Ok(())
+}
+
+#[test]
+fn test_find_redacts_secrets_unless_reveal_is_requested() -> MyResult {
+    let (_dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_key_b64_from(&key_path)?;
+    let mut credential = sample_credential2();
+    credential.password = "main-pass-S3cr3t".to_string();
+    credential.security_questions[0].answer = "answer-one-S3cr3t".to_string();
+    credential.security_questions[1].answer = "answer-two-S3cr3t".to_string();
+    credential.sub_credentials[0].password = "sub-one-S3cr3t".to_string();
+    credential.sub_credentials[1].password = "sub-two-S3cr3t".to_string();
+    upsert_credential(&vault_path, &key, &credential)?;
+
+    let secrets = [
+        "main-pass-S3cr3t",
+        "answer-one-S3cr3t",
+        "answer-two-S3cr3t",
+        "sub-one-S3cr3t",
+        "sub-two-S3cr3t",
+    ];
+
+    for json in [false, true] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pwd_manager"));
+        command.args([
+            "find",
+            "RustRover",
+            "--key-file",
+            key_path.to_str().expect("temporary path is UTF-8"),
+            "--input",
+            vault_path.to_str().expect("temporary path is UTF-8"),
+        ]);
+        if json {
+            command.arg("--json");
+        }
+
+        let output = command.output()?;
+        assert!(output.status.success());
+        let stdout =
+            String::from_utf8(output.stdout).map_err(|e| UpstreamError::Other(e.to_string()))?;
+        for secret in secrets {
+            assert!(
+                !stdout.contains(secret),
+                "default find output leaked {secret:?}: {stdout}"
+            );
+        }
+        assert!(stdout.contains("******"));
+
+        let output = Command::new(env!("CARGO_BIN_EXE_pwd_manager"))
+            .args([
+                "find",
+                "RustRover",
+                "--key-file",
+                key_path.to_str().expect("temporary path is UTF-8"),
+                "--input",
+                vault_path.to_str().expect("temporary path is UTF-8"),
+                "--reveal",
+            ])
+            .args(if json { vec!["--json"] } else { vec![] })
+            .output()?;
+        assert!(output.status.success());
+        let stdout =
+            String::from_utf8(output.stdout).map_err(|e| UpstreamError::Other(e.to_string()))?;
+        for secret in secrets {
+            assert!(
+                stdout.contains(secret),
+                "--reveal output omitted {secret:?}: {stdout}"
+            );
+        }
+    }
 
     Ok(())
 }

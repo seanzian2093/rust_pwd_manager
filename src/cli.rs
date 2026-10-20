@@ -100,9 +100,13 @@ pub enum Commands {
         /// Account name to search for
         account: String,
 
-        /// Print raw JSON output
+        /// Print JSON output (secrets are redacted unless --reveal is set)
         #[arg(short, long)]
         json: bool,
+
+        /// Reveal passwords and security-question answers in the output
+        #[arg(long)]
+        reveal: bool,
 
         /// Path to the Base64 key file
         #[arg(

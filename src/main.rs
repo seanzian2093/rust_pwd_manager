@@ -66,6 +66,7 @@ fn run() -> Result<(), UpstreamError> {
         Commands::Find {
             account,
             json,
+            reveal,
             key_file,
             input,
         } => {
@@ -74,26 +75,39 @@ fn run() -> Result<(), UpstreamError> {
             let cred = find_and_decrypt(&account, &key, &input)?;
 
             if json {
-                let rendered = serde_json::to_string_pretty(&cred)
+                let mut output_cred = cred;
+                if !reveal {
+                    output_cred.password = "******".to_string();
+                    for question in &mut output_cred.security_questions {
+                        question.answer = "******".to_string();
+                    }
+                    for sub_credential in &mut output_cred.sub_credentials {
+                        sub_credential.password = "******".to_string();
+                    }
+                }
+                let rendered = serde_json::to_string_pretty(&output_cred)
                     .map_err(|e| UpstreamError::Other(format!("Failed to render JSON: {}", e)))?;
                 println!("{}", rendered);
             } else {
+                let password = if reveal { &cred.password } else { "******" };
                 println!(
                     "Found credential for '{}': user={}, password={}",
-                    cred.account_name, cred.user_name, cred.password
+                    cred.account_name, cred.user_name, password
                 );
 
                 if !cred.security_questions.is_empty() {
                     println!("Security questions:");
                     for q in &cred.security_questions {
-                        println!("  - {} = {}", q.question, q.answer);
+                        let answer = if reveal { &q.answer } else { "******" };
+                        println!("  - {} = {}", q.question, answer);
                     }
                 }
 
                 if !cred.sub_credentials.is_empty() {
                     println!("Sub credentials:");
                     for s in &cred.sub_credentials {
-                        println!("  - {} = {}", s.cred_name, s.password);
+                        let password = if reveal { &s.password } else { "******" };
+                        println!("  - {} = {}", s.cred_name, password);
                     }
                 }
             }
