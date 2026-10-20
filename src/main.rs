@@ -2,20 +2,12 @@ use std::path::Path;
 
 use clap::Parser;
 use pwd_manager::{
-    Credential,
-    UpstreamError,
+    Credential, UpstreamError,
     cli::{Cli, Commands},
-    delete_credential,
-    encrypt_cred,
-    encrypt_security_question,
-    encrypt_sub_credential,
-    encrypt_text,
-    find_and_decrypt,
+    delete_credential, find_and_decrypt, import_legacy_json, list_accounts, load_key_b64_from,
     load_or_create_key_b64_from,
     secret_input::{SecretSource, read_security_questions, read_sub_credentials, resolve_secret},
-    update_credential,
-    // append_credential,
-    upsert_credential,
+    update_credential, upsert_credential,
 };
 
 fn main() {
@@ -67,9 +59,7 @@ fn run() -> Result<(), UpstreamError> {
 
             let key = load_or_create_key_b64_from(&key_file)?;
 
-            let enc = encrypt_cred(&key, &cred)?;
-            // append_credential(&output, enc)?;
-            upsert_credential(&output, enc)?;
+            upsert_credential(&output, &key, &cred)?;
 
             println!("Adding credential: {:#?} - succeeded", cred.account_name);
         }
@@ -79,7 +69,9 @@ fn run() -> Result<(), UpstreamError> {
             key_file,
             input,
         } => {
-            let cred = find_and_decrypt(&account, &key_file, &input)?;
+            // Do not create a key here: finding must fail if no vault key exists yet.
+            let key = load_key_b64_from(&key_file)?;
+            let cred = find_and_decrypt(&account, &key, &input)?;
 
             if json {
                 let rendered = serde_json::to_string_pretty(&cred)
@@ -109,6 +101,25 @@ fn run() -> Result<(), UpstreamError> {
         Commands::Delete { account, input } => {
             delete_credential(&input, &account)?;
             println!("Deleted credentials for account: {}", account);
+        }
+        Commands::List { input } => {
+            let accounts = list_accounts(&input)?;
+            if accounts.is_empty() {
+                println!("No credentials stored.");
+            } else {
+                for account in accounts {
+                    println!("{}", account);
+                }
+            }
+        }
+        Commands::Import {
+            legacy_input,
+            key_file,
+            output,
+        } => {
+            let key = load_key_b64_from(&key_file)?;
+            let count = import_legacy_json(&legacy_input, &key, &output)?;
+            println!("Imported {} credential(s) into {}", count, output);
         }
         Commands::Update {
             account,
@@ -141,27 +152,21 @@ fn run() -> Result<(), UpstreamError> {
                 None => Vec::new(),
             };
 
-            // Load the key to (re)encrypt changed fields
+            // Load the key to (re)encrypt the whole document on save
             let key = load_or_create_key_b64_from(&key_file)?;
 
-            update_credential(&input, &account, |c| {
-                if let Some(u) = user_name.as_ref() {
-                    c.user_name = encrypt_text(&key, u.as_bytes())?;
+            update_credential(&input, &key, &account, |c| {
+                if let Some(u) = user_name {
+                    c.user_name = u;
                 }
-                if let Some(p) = password.as_ref() {
-                    c.password = encrypt_text(&key, p.as_bytes())?;
+                if let Some(p) = password {
+                    c.password = p.to_string();
                 }
                 if !security_questions.is_empty() {
-                    c.security_questions = security_questions
-                        .iter()
-                        .map(|q| encrypt_security_question(&key, q))
-                        .collect::<Result<Vec<_>, _>>()?;
+                    c.security_questions = security_questions;
                 }
                 if !sub_credentials.is_empty() {
-                    c.sub_credentials = sub_credentials
-                        .iter()
-                        .map(|s| encrypt_sub_credential(&key, s))
-                        .collect::<Result<Vec<_>, _>>()?;
+                    c.sub_credentials = sub_credentials;
                 }
                 // Keep struct.account_name unchanged to preserve original casing
                 Ok(())

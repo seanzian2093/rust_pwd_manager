@@ -7,8 +7,8 @@ use tempfile::TempDir;
 fn temp_env() -> (TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = dir.path().join("key.txt");
-    let creds_path = dir.path().join("credentials.json");
-    (dir, key_path, creds_path)
+    let vault_path = dir.path().join("vault.redb");
+    (dir, key_path, vault_path)
 }
 
 fn sample_credential2() -> Credential {
@@ -158,21 +158,25 @@ fn test_decrypt_text_rejects_tampered_ciphertext() -> MyResult {
     Ok(())
 }
 
-// ---------- credential encryption ----------
+// ---------- whole-document credential encryption ----------
 
 #[test]
-fn test_encrypt_decrypt_cred_round_trip() -> MyResult {
+fn test_encrypt_decrypt_credential_round_trip() -> MyResult {
     let (_dir, key_path, _) = temp_env();
     let key = load_or_create_key_b64_from(&key_path)?;
 
     let cred = sample_credential2();
-    let enc = encrypt_cred(&key, &cred)?;
-    let dec = decrypt_cred(&key, &enc)?;
+    let envelope = encrypt_credential(&key, "rustrover", &cred)?;
+    let dec = decrypt_credential(&key, "rustrover", &envelope)?;
 
     assert_eq!(dec.user_name, cred.user_name);
     assert_eq!(dec.password, cred.password);
     assert_eq!(dec.security_questions.len(), cred.security_questions.len());
     assert_eq!(dec.sub_credentials.len(), cred.sub_credentials.len());
+    assert_eq!(
+        dec.security_questions[0].question,
+        cred.security_questions[0].question
+    );
     assert_eq!(
         dec.security_questions[0].answer,
         cred.security_questions[0].answer
@@ -186,33 +190,30 @@ fn test_encrypt_decrypt_cred_round_trip() -> MyResult {
 }
 
 #[test]
-fn test_encrypt_cred_leaves_labels_in_plaintext() -> MyResult {
+fn test_decrypt_credential_rejects_wrong_account_key() -> MyResult {
     let (_dir, key_path, _) = temp_env();
     let key = load_or_create_key_b64_from(&key_path)?;
 
-    let cred = sample_credential2();
-    let enc = encrypt_cred(&key, &cred)?;
+    let envelope = encrypt_credential(&key, "github", &sample_credential2())?;
 
-    // Documents current behaviour: values are encrypted, labels are not.
-    assert_eq!(enc.account_name, cred.account_name);
-    assert_eq!(enc.security_questions[0].question, "what is your name");
-    assert_eq!(enc.sub_credentials[0].cred_name, "sub_cred1");
-    assert_ne!(enc.user_name, cred.user_name);
+    // A ciphertext moved to a different account must fail authentication,
+    // since the account key is bound in as AAD.
+    assert!(decrypt_credential(&key, "gitlab", &envelope).is_err());
 
     Ok(())
 }
 
-// ---------- store: upsert / find / delete ----------
+// ---------- store: upsert / find / delete / list ----------
 
 #[test]
 fn test_upsert_then_find_round_trip() -> MyResult {
-    let (_dir, key_path, creds_path) = temp_env();
+    let (_dir, key_path, vault_path) = temp_env();
     let key = load_or_create_key_b64_from(&key_path)?;
 
     let cred = sample_credential2();
-    upsert_credential(&creds_path, encrypt_cred(&key, &cred)?)?;
+    upsert_credential(&vault_path, &key, &cred)?;
 
-    let found = find_and_decrypt("RustRover", &key_path, &creds_path)?;
+    let found = find_and_decrypt("RustRover", &key, &vault_path)?;
     assert_eq!(found.user_name, "sean_z");
     assert_eq!(found.password, "password");
 
@@ -221,29 +222,29 @@ fn test_upsert_then_find_round_trip() -> MyResult {
 
 #[test]
 fn test_find_is_case_insensitive() -> MyResult {
-    let (_dir, key_path, creds_path) = temp_env();
+    let (_dir, key_path, vault_path) = temp_env();
     let key = load_or_create_key_b64_from(&key_path)?;
 
-    upsert_credential(&creds_path, encrypt_cred(&key, &sample_credential2())?)?;
+    upsert_credential(&vault_path, &key, &sample_credential2())?;
 
-    assert!(find_and_decrypt("rustrover", &key_path, &creds_path).is_ok());
-    assert!(find_and_decrypt("RUSTROVER", &key_path, &creds_path).is_ok());
+    assert!(find_and_decrypt("rustrover", &key, &vault_path).is_ok());
+    assert!(find_and_decrypt("RUSTROVER", &key, &vault_path).is_ok());
 
     Ok(())
 }
 
 #[test]
 fn test_upsert_replaces_existing_account() -> MyResult {
-    let (_dir, key_path, creds_path) = temp_env();
+    let (_dir, key_path, vault_path) = temp_env();
     let key = load_or_create_key_b64_from(&key_path)?;
 
-    upsert_credential(&creds_path, encrypt_cred(&key, &sample_credential2())?)?;
+    upsert_credential(&vault_path, &key, &sample_credential2())?;
 
     let mut updated = sample_credential2();
     updated.password = "second-password".to_string();
-    upsert_credential(&creds_path, encrypt_cred(&key, &updated)?)?;
+    upsert_credential(&vault_path, &key, &updated)?;
 
-    let found = find_and_decrypt("RustRover", &key_path, &creds_path)?;
+    let found = find_and_decrypt("RustRover", &key, &vault_path)?;
     assert_eq!(found.password, "second-password");
 
     Ok(())
@@ -251,34 +252,67 @@ fn test_upsert_replaces_existing_account() -> MyResult {
 
 #[test]
 fn test_find_missing_account_errors() -> MyResult {
-    let (_dir, key_path, creds_path) = temp_env();
+    let (_dir, key_path, vault_path) = temp_env();
     let key = load_or_create_key_b64_from(&key_path)?;
-    upsert_credential(&creds_path, encrypt_cred(&key, &sample_credential2())?)?;
+    upsert_credential(&vault_path, &key, &sample_credential2())?;
 
-    assert!(find_and_decrypt("NoSuchAccount", &key_path, &creds_path).is_err());
+    assert!(find_and_decrypt("NoSuchAccount", &key, &vault_path).is_err());
 
     Ok(())
 }
 
 #[test]
 fn test_delete_credential() -> MyResult {
-    let (_dir, key_path, creds_path) = temp_env();
+    let (_dir, key_path, vault_path) = temp_env();
     let key = load_or_create_key_b64_from(&key_path)?;
-    upsert_credential(&creds_path, encrypt_cred(&key, &sample_credential2())?)?;
+    upsert_credential(&vault_path, &key, &sample_credential2())?;
 
     // Case-insensitive, consistent with find.
-    delete_credential(&creds_path, "rustrover")?;
-    assert!(find_and_decrypt("RustRover", &key_path, &creds_path).is_err());
+    delete_credential(&vault_path, "rustrover")?;
+    assert!(find_and_decrypt("RustRover", &key, &vault_path).is_err());
 
     // Deleting again must report the miss rather than succeeding silently.
-    assert!(delete_credential(&creds_path, "RustRover").is_err());
+    assert!(delete_credential(&vault_path, "RustRover").is_err());
+
+    Ok(())
+}
+
+#[test]
+fn test_update_credential_changes_only_touched_fields() -> MyResult {
+    let (_dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_key_b64_from(&key_path)?;
+    upsert_credential(&vault_path, &key, &sample_credential2())?;
+
+    update_credential(&vault_path, &key, "RustRover", |c| {
+        c.password = "rotated".to_string();
+        Ok(())
+    })?;
+
+    let found = find_and_decrypt("RustRover", &key, &vault_path)?;
+    assert_eq!(found.password, "rotated");
+    assert_eq!(found.user_name, "sean_z"); // untouched field survives
+    assert_eq!(found.security_questions.len(), 2); // untouched field survives
+
+    Ok(())
+}
+
+#[test]
+fn test_update_missing_account_errors() -> MyResult {
+    let (_dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_key_b64_from(&key_path)?;
+
+    let result = update_credential(&vault_path, &key, "NoSuchAccount", |c| {
+        c.password = "x".to_string();
+        Ok(())
+    });
+    assert!(result.is_err());
 
     Ok(())
 }
 
 #[test]
 fn test_multiple_accounts_are_independent() -> MyResult {
-    let (_dir, key_path, creds_path) = temp_env();
+    let (_dir, key_path, vault_path) = temp_env();
     let key = load_or_create_key_b64_from(&key_path)?;
 
     let mut first = sample_credential();
@@ -288,20 +322,84 @@ fn test_multiple_accounts_are_independent() -> MyResult {
     second.account_name = "Beta".into();
     second.password = "beta-pass".into();
 
-    upsert_credential(&creds_path, encrypt_cred(&key, &first)?)?;
-    upsert_credential(&creds_path, encrypt_cred(&key, &second)?)?;
+    upsert_credential(&vault_path, &key, &first)?;
+    upsert_credential(&vault_path, &key, &second)?;
 
     assert_eq!(
-        find_and_decrypt("Alpha", &key_path, &creds_path)?.password,
+        find_and_decrypt("Alpha", &key, &vault_path)?.password,
         "alpha-pass"
     );
     assert_eq!(
-        find_and_decrypt("Beta", &key_path, &creds_path)?.password,
+        find_and_decrypt("Beta", &key, &vault_path)?.password,
         "beta-pass"
     );
 
-    delete_credential(&creds_path, "Alpha")?;
-    assert!(find_and_decrypt("Beta", &key_path, &creds_path).is_ok());
+    delete_credential(&vault_path, "Alpha")?;
+    assert!(find_and_decrypt("Beta", &key, &vault_path).is_ok());
+
+    Ok(())
+}
+
+#[test]
+fn test_list_accounts() -> MyResult {
+    let (_dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_key_b64_from(&key_path)?;
+
+    assert!(list_accounts(&vault_path)?.is_empty());
+
+    let mut first = sample_credential();
+    first.account_name = "Alpha".into();
+    let mut second = sample_credential();
+    second.account_name = "Beta".into();
+    upsert_credential(&vault_path, &key, &first)?;
+    upsert_credential(&vault_path, &key, &second)?;
+
+    let mut accounts = list_accounts(&vault_path)?;
+    accounts.sort();
+    assert_eq!(accounts, vec!["alpha".to_string(), "beta".to_string()]);
+
+    Ok(())
+}
+
+// ---------- import from the legacy per-field JSON store ----------
+
+#[test]
+fn test_import_legacy_json() -> MyResult {
+    let (_dir, key_path, vault_path) = temp_env();
+    let key = load_or_create_key_b64_from(&key_path)?;
+
+    // Hand-build a legacy-format JSON store: a map of normalized account name
+    // to a Credential whose user_name/password/answers are individually
+    // encrypted text envelopes, matching what the old per-field code wrote.
+    let legacy_cred = Credential {
+        account_name: "RustRover".to_string(),
+        user_name: encrypt_text(&key, b"sean_z")?,
+        password: encrypt_text(&key, b"password")?,
+        security_questions: vec![SecurityQuestion {
+            question: "what is your name".to_string(),
+            answer: encrypt_text(&key, b"Sean Z")?,
+        }],
+        sub_credentials: vec![SubCredential {
+            cred_name: "sub_cred1".to_string(),
+            password: encrypt_text(&key, b"password1")?,
+        }],
+    };
+    let mut legacy_map = std::collections::BTreeMap::new();
+    legacy_map.insert("rustrover".to_string(), legacy_cred);
+
+    let legacy_path = _dir.path().join("legacy.json");
+    let file = std::fs::File::create(&legacy_path)?;
+    serde_json::to_writer_pretty(file, &legacy_map)
+        .map_err(|e| pwd_manager::UpstreamError::Other(e.to_string()))?;
+
+    let imported = import_legacy_json(&legacy_path, &key, &vault_path)?;
+    assert_eq!(imported, 1);
+
+    let found = find_and_decrypt("RustRover", &key, &vault_path)?;
+    assert_eq!(found.user_name, "sean_z");
+    assert_eq!(found.password, "password");
+    assert_eq!(found.security_questions[0].answer, "Sean Z");
+    assert_eq!(found.sub_credentials[0].password, "password1");
 
     Ok(())
 }

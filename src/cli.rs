@@ -85,12 +85,12 @@ pub enum Commands {
         )]
         key_file: String,
 
-        /// Path to the output JSON file
+        /// Path to the vault file (redb; created if missing)
         #[arg(
             short = 'o',
             long = "output",
             value_name = "FILE",
-            default_value = "data/output/credentials.json"
+            default_value = "data/output/vault.redb"
         )]
         output: String,
     },
@@ -112,12 +112,12 @@ pub enum Commands {
         )]
         key_file: String,
 
-        /// Path to the credentials JSON file to read from
+        /// Path to the vault file to read from
         #[arg(
             short = 'i',
             long = "input",
             value_name = "FILE",
-            default_value = "data/output/credentials.json"
+            default_value = "data/output/vault.redb"
         )]
         input: String,
     },
@@ -129,9 +129,44 @@ pub enum Commands {
             short = 'i',
             long = "input",
             value_name = "FILE",
-            default_value = "data/output/credentials.json"
+            default_value = "data/output/vault.redb"
         )]
         input: String,
+    },
+
+    /// List every stored account name
+    List {
+        #[arg(
+            short = 'i',
+            long = "input",
+            value_name = "FILE",
+            default_value = "data/output/vault.redb"
+        )]
+        input: String,
+    },
+
+    /// Import credentials from the legacy per-field JSON store into the vault
+    Import {
+        /// Path to the old JSON credentials file
+        #[arg(long = "legacy-input", value_name = "FILE")]
+        legacy_input: String,
+
+        /// Path to the Base64 key file used to encrypt the legacy store
+        #[arg(
+            long = "key-file",
+            value_name = "PATH",
+            default_value = "data/input/key.txt"
+        )]
+        key_file: String,
+
+        /// Path to the vault file to import into (created if missing)
+        #[arg(
+            short = 'o',
+            long = "output",
+            value_name = "FILE",
+            default_value = "data/output/vault.redb"
+        )]
+        output: String,
     },
 
     /// Update credential fields; unspecified fields remain unchanged
@@ -164,7 +199,7 @@ pub enum Commands {
             short = 'i',
             long = "input",
             value_name = "FILE",
-            default_value = "data/output/credentials.json"
+            default_value = "data/output/vault.redb"
         )]
         input: String,
         #[arg(

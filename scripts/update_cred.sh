@@ -12,4 +12,4 @@ target/debug/pwd_manager update outlook -u bob2 \
     --sec-file "$SECRETS/sec" \
     --sub-file "$SECRETS/sub" \
     --key-file ./data/input/key.txt \
-    --input ./data/output/credentials.json
+    --input ./data/output/vault.redb

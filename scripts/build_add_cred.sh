@@ -1,6 +1,6 @@
 cargo build
 
-OUTPUT_FILE="${1:-./data/output/credentials.json}"
+OUTPUT_FILE="${1:-./data/output/vault.redb}"
 
 # Secrets are staged in owner-only files so they never appear in argv or shell history.
 SECRETS=$(mktemp -d)
