@@ -29,27 +29,27 @@ fn load_key_b64_from(
 
 fn sample_credential2() -> Credential {
     Credential {
-        account_name: "RustRover".to_string(),
-        user_name: "sean_z".to_string(),
-        password: "password".to_string(),
+        account_name: "RustRover".to_string().into(),
+        user_name: "sean_z".to_string().into(),
+        password: "password".to_string().into(),
         security_questions: vec![
             SecurityQuestion {
-                question: "what is your name".to_string(),
-                answer: "Sean Z".to_string(),
+                question: "what is your name".to_string().into(),
+                answer: "Sean Z".to_string().into(),
             },
             SecurityQuestion {
-                question: "what do you live".to_string(),
-                answer: "Canada".to_string(),
+                question: "what do you live".to_string().into(),
+                answer: "Canada".to_string().into(),
             },
         ],
         sub_credentials: vec![
             SubCredential {
-                cred_name: "sub_cred1".to_string(),
-                password: "password1".to_string(),
+                cred_name: "sub_cred1".to_string().into(),
+                password: "password1".to_string().into(),
             },
             SubCredential {
-                cred_name: "sub_cred2".to_string(),
-                password: "password2".to_string(),
+                cred_name: "sub_cred2".to_string().into(),
+                password: "password2".to_string().into(),
             },
         ],
     }
@@ -57,9 +57,9 @@ fn sample_credential2() -> Credential {
 
 fn sample_credential() -> Credential {
     Credential {
-        account_name: "RustRover".into(),
-        user_name: "sean_z".into(),
-        password: "password".into(),
+        account_name: "RustRover".to_string().into(),
+        user_name: "sean_z".to_string().into(),
+        password: "password".to_string().into(),
         security_questions: vec![],
         sub_credentials: vec![],
     }
@@ -68,16 +68,16 @@ fn sample_credential() -> Credential {
 #[test]
 fn test_credential_debug_redacts_secrets_and_identifiers() {
     let credential = Credential {
-        account_name: "visible-account".to_string(),
-        user_name: "private-username".to_string(),
-        password: "private-password".to_string(),
+        account_name: "visible-account".to_string().into(),
+        user_name: "private-username".to_string().into(),
+        password: "private-password".to_string().into(),
         security_questions: vec![SecurityQuestion {
-            question: "private-question".to_string(),
-            answer: "private-answer".to_string(),
+            question: "private-question".to_string().into(),
+            answer: "private-answer".to_string().into(),
         }],
         sub_credentials: vec![SubCredential {
-            cred_name: "private-sub-name".to_string(),
-            password: "private-sub-password".to_string(),
+            cred_name: "private-sub-name".to_string().into(),
+            password: "private-sub-password".to_string().into(),
         }],
     };
 
@@ -363,8 +363,8 @@ fn test_upsert_then_find_round_trip() -> MyResult {
     upsert_credential(&vault_path, &key, &cred)?;
 
     let found = find_and_decrypt("RustRover", &key, &vault_path)?;
-    assert_eq!(found.user_name, "sean_z");
-    assert_eq!(found.password, "password");
+    assert_eq!(found.user_name.as_str(), "sean_z");
+    assert_eq!(found.password.as_str(), "password");
 
     Ok(())
 }
@@ -390,11 +390,11 @@ fn test_upsert_replaces_existing_account() -> MyResult {
     upsert_credential(&vault_path, &key, &sample_credential2())?;
 
     let mut updated = sample_credential2();
-    updated.password = "second-password".to_string();
+    updated.password = "second-password".to_string().into();
     upsert_credential(&vault_path, &key, &updated)?;
 
     let found = find_and_decrypt("RustRover", &key, &vault_path)?;
-    assert_eq!(found.password, "second-password");
+    assert_eq!(found.password.as_str(), "second-password");
 
     Ok(())
 }
@@ -433,13 +433,13 @@ fn test_update_credential_changes_only_touched_fields() -> MyResult {
     upsert_credential(&vault_path, &key, &sample_credential2())?;
 
     update_credential(&vault_path, &key, "RustRover", |c| {
-        c.password = "rotated".to_string();
+        c.password = "rotated".to_string().into();
         Ok(())
     })?;
 
     let found = find_and_decrypt("RustRover", &key, &vault_path)?;
-    assert_eq!(found.password, "rotated");
-    assert_eq!(found.user_name, "sean_z"); // untouched field survives
+    assert_eq!(found.password.as_str(), "rotated");
+    assert_eq!(found.user_name.as_str(), "sean_z"); // untouched field survives
     assert_eq!(found.security_questions.len(), 2); // untouched field survives
 
     Ok(())
@@ -451,7 +451,7 @@ fn test_update_missing_account_errors() -> MyResult {
     let key = load_or_create_key_b64_from(&key_path)?;
 
     let result = update_credential(&vault_path, &key, "NoSuchAccount", |c| {
-        c.password = "x".to_string();
+        c.password = "x".to_string().into();
         Ok(())
     });
     assert!(result.is_err());
@@ -465,21 +465,25 @@ fn test_multiple_accounts_are_independent() -> MyResult {
     let key = load_or_create_key_b64_from(&key_path)?;
 
     let mut first = sample_credential();
-    first.account_name = "Alpha".into();
-    first.password = "alpha-pass".into();
+    first.account_name = "Alpha".to_string().into();
+    first.password = "alpha-pass".to_string().into();
     let mut second = sample_credential();
-    second.account_name = "Beta".into();
-    second.password = "beta-pass".into();
+    second.account_name = "Beta".to_string().into();
+    second.password = "beta-pass".to_string().into();
 
     upsert_credential(&vault_path, &key, &first)?;
     upsert_credential(&vault_path, &key, &second)?;
 
     assert_eq!(
-        find_and_decrypt("Alpha", &key, &vault_path)?.password,
+        find_and_decrypt("Alpha", &key, &vault_path)?
+            .password
+            .as_str(),
         "alpha-pass"
     );
     assert_eq!(
-        find_and_decrypt("Beta", &key, &vault_path)?.password,
+        find_and_decrypt("Beta", &key, &vault_path)?
+            .password
+            .as_str(),
         "beta-pass"
     );
 
@@ -497,9 +501,9 @@ fn test_list_accounts() -> MyResult {
     assert!(list_accounts(&vault_path)?.is_empty());
 
     let mut first = sample_credential();
-    first.account_name = "Alpha".into();
+    first.account_name = "Alpha".to_string().into();
     let mut second = sample_credential();
-    second.account_name = "Beta".into();
+    second.account_name = "Beta".to_string().into();
     upsert_credential(&vault_path, &key, &first)?;
     upsert_credential(&vault_path, &key, &second)?;
 
@@ -521,16 +525,16 @@ fn test_import_legacy_json() -> MyResult {
     // to a Credential whose user_name/password/answers are individually
     // encrypted text envelopes, matching what the old per-field code wrote.
     let legacy_cred = Credential {
-        account_name: "RustRover".to_string(),
-        user_name: encrypt_text(&key, b"sean_z")?,
-        password: encrypt_text(&key, b"password")?,
+        account_name: "RustRover".to_string().into(),
+        user_name: encrypt_text(&key, b"sean_z")?.into(),
+        password: encrypt_text(&key, b"password")?.into(),
         security_questions: vec![SecurityQuestion {
-            question: "what is your name".to_string(),
-            answer: encrypt_text(&key, b"Sean Z")?,
+            question: "what is your name".to_string().into(),
+            answer: encrypt_text(&key, b"Sean Z")?.into(),
         }],
         sub_credentials: vec![SubCredential {
-            cred_name: "sub_cred1".to_string(),
-            password: encrypt_text(&key, b"password1")?,
+            cred_name: "sub_cred1".to_string().into(),
+            password: encrypt_text(&key, b"password1")?.into(),
         }],
     };
     let mut legacy_map = std::collections::BTreeMap::new();
@@ -545,10 +549,10 @@ fn test_import_legacy_json() -> MyResult {
     assert_eq!(imported, 1);
 
     let found = find_and_decrypt("RustRover", &key, &vault_path)?;
-    assert_eq!(found.user_name, "sean_z");
-    assert_eq!(found.password, "password");
-    assert_eq!(found.security_questions[0].answer, "Sean Z");
-    assert_eq!(found.sub_credentials[0].password, "password1");
+    assert_eq!(found.user_name.as_str(), "sean_z");
+    assert_eq!(found.password.as_str(), "password");
+    assert_eq!(found.security_questions[0].answer.as_str(), "Sean Z");
+    assert_eq!(found.sub_credentials[0].password.as_str(), "password1");
 
     Ok(())
 }
@@ -565,16 +569,16 @@ fn test_import_legacy_json_with_shared_nonce_via_cli() -> MyResult {
         .map_err(|e| UpstreamError::Other(e.to_string()))?;
 
     let legacy_credential = Credential {
-        account_name: "LegacyAccount".to_string(),
-        user_name: encrypt_legacy_fixed_nonce(&key, &nonce, b"legacy-user"),
-        password: encrypt_legacy_fixed_nonce(&key, &nonce, b"legacy-password"),
+        account_name: "LegacyAccount".to_string().into(),
+        user_name: encrypt_legacy_fixed_nonce(&key, &nonce, b"legacy-user").into(),
+        password: encrypt_legacy_fixed_nonce(&key, &nonce, b"legacy-password").into(),
         security_questions: vec![SecurityQuestion {
-            question: "First school?".to_string(),
-            answer: encrypt_legacy_fixed_nonce(&key, &nonce, b"legacy-answer"),
+            question: "First school?".to_string().into(),
+            answer: encrypt_legacy_fixed_nonce(&key, &nonce, b"legacy-answer").into(),
         }],
         sub_credentials: vec![SubCredential {
-            cred_name: "mail".to_string(),
-            password: encrypt_legacy_fixed_nonce(&key, &nonce, b"legacy-mail-password"),
+            cred_name: "mail".to_string().into(),
+            password: encrypt_legacy_fixed_nonce(&key, &nonce, b"legacy-mail-password").into(),
         }],
     };
     let legacy_json = dir.path().join("legacy.json");
@@ -611,10 +615,16 @@ fn test_import_legacy_json_with_shared_nonce_via_cli() -> MyResult {
 
     let unlocked_key = load_key_from(&key_path, TEST_MASTER_PASSPHRASE)?;
     let imported = find_and_decrypt("LegacyAccount", &unlocked_key, &vault_path)?;
-    assert_eq!(imported.user_name, "legacy-user");
-    assert_eq!(imported.password, "legacy-password");
-    assert_eq!(imported.security_questions[0].answer, "legacy-answer");
-    assert_eq!(imported.sub_credentials[0].password, "legacy-mail-password");
+    assert_eq!(imported.user_name.as_str(), "legacy-user");
+    assert_eq!(imported.password.as_str(), "legacy-password");
+    assert_eq!(
+        imported.security_questions[0].answer.as_str(),
+        "legacy-answer"
+    );
+    assert_eq!(
+        imported.sub_credentials[0].password.as_str(),
+        "legacy-mail-password"
+    );
 
     Ok(())
 }
@@ -629,9 +639,9 @@ fn test_import_legacy_json_does_not_overwrite_existing_records() -> MyResult {
     let mut legacy_map = std::collections::BTreeMap::new();
     for name in ["RustRover", "NewAccount"] {
         let mut credential = sample_credential();
-        credential.account_name = name.to_string();
-        credential.user_name = encrypt_text(&key, b"legacy-user")?;
-        credential.password = encrypt_text(&key, b"legacy-password")?;
+        credential.account_name = name.to_string().into();
+        credential.user_name = encrypt_text(&key, b"legacy-user")?.into();
+        credential.password = encrypt_text(&key, b"legacy-password")?.into();
         legacy_map.insert(name.to_ascii_lowercase(), credential);
     }
     let legacy_path = _dir.path().join("legacy.json");
@@ -674,8 +684,8 @@ fn test_import_legacy_json_wrong_key_does_not_create_vault() -> MyResult {
     let (_dir, key_path, vault_path) = temp_env();
     let key = load_or_create_key_b64_from(&key_path)?;
     let mut legacy_credential = sample_credential();
-    legacy_credential.user_name = encrypt_text(&key, b"legacy-user")?;
-    legacy_credential.password = encrypt_text(&key, b"legacy-password")?;
+    legacy_credential.user_name = encrypt_text(&key, b"legacy-user")?.into();
+    legacy_credential.password = encrypt_text(&key, b"legacy-password")?.into();
     let legacy_map =
         std::collections::BTreeMap::from([("rustrover".to_string(), legacy_credential)]);
     let legacy_path = _dir.path().join("legacy.json");
@@ -707,11 +717,11 @@ fn test_find_redacts_secrets_unless_reveal_is_requested() -> MyResult {
     let passphrase_file = tempfile::NamedTempFile::new_in(dir.path())?;
     std::fs::write(passphrase_file.path(), TEST_MASTER_PASSPHRASE)?;
     let mut credential = sample_credential2();
-    credential.password = "main-pass-S3cr3t".to_string();
-    credential.security_questions[0].answer = "answer-one-S3cr3t".to_string();
-    credential.security_questions[1].answer = "answer-two-S3cr3t".to_string();
-    credential.sub_credentials[0].password = "sub-one-S3cr3t".to_string();
-    credential.sub_credentials[1].password = "sub-two-S3cr3t".to_string();
+    credential.password = "main-pass-S3cr3t".to_string().into();
+    credential.security_questions[0].answer = "answer-one-S3cr3t".to_string().into();
+    credential.security_questions[1].answer = "answer-two-S3cr3t".to_string().into();
+    credential.sub_credentials[0].password = "sub-one-S3cr3t".to_string().into();
+    credential.sub_credentials[1].password = "sub-two-S3cr3t".to_string().into();
     upsert_credential(&vault_path, &key, &credential)?;
 
     let secrets = [
@@ -807,8 +817,8 @@ fn test_export_cli_writes_owner_only_json_without_overwriting() -> MyResult {
     std::fs::write(&passphrase_file, TEST_MASTER_PASSPHRASE)?;
 
     let mut credential = sample_credential2();
-    credential.password = "exported-main-secret".to_string();
-    credential.security_questions[0].answer = "exported-answer-secret".to_string();
+    credential.password = "exported-main-secret".to_string().into();
+    credential.security_questions[0].answer = "exported-answer-secret".to_string().into();
     upsert_credential(&vault_path, &key, &credential)?;
 
     let export_path = dir.path().join("export.json");
@@ -838,9 +848,12 @@ fn test_export_cli_writes_owner_only_json_without_overwriting() -> MyResult {
     let exported: std::collections::BTreeMap<String, Credential> =
         serde_json::from_slice(&std::fs::read(&export_path)?)
             .map_err(|e| UpstreamError::Other(e.to_string()))?;
-    assert_eq!(exported["rustrover"].password, "exported-main-secret");
     assert_eq!(
-        exported["rustrover"].security_questions[0].answer,
+        exported["rustrover"].password.as_str(),
+        "exported-main-secret"
+    );
+    assert_eq!(
+        exported["rustrover"].security_questions[0].answer.as_str(),
         "exported-answer-secret"
     );
 
@@ -930,7 +943,7 @@ fn test_find_copies_only_selected_secret_to_clipboard() -> MyResult {
 
     let secret = "clipboard-only-secret";
     let mut credential = sample_credential2();
-    credential.password = secret.to_string();
+    credential.password = secret.to_string().into();
     upsert_credential(&vault_path, &key, &credential)?;
 
     let bin_dir = dir.path().join("bin");
@@ -982,7 +995,7 @@ fn test_backup_and_restore_cli_preserve_vault_and_reject_overwrite() -> MyResult
     let (dir, key_path, vault_path) = temp_env();
     let key = load_or_create_test_key(&key_path)?;
     let mut credential = sample_credential2();
-    credential.password = "backup-round-trip-secret".to_string();
+    credential.password = "backup-round-trip-secret".to_string().into();
     upsert_credential(&vault_path, &key, &credential)?;
 
     let backup_path = dir.path().join("backups/vault.redb");
@@ -1001,7 +1014,9 @@ fn test_backup_and_restore_cli_preserve_vault_and_reject_overwrite() -> MyResult
         String::from_utf8_lossy(&backup.stderr)
     );
     assert_eq!(
-        find_and_decrypt("RustRover", &key, &backup_path)?.password,
+        find_and_decrypt("RustRover", &key, &backup_path)?
+            .password
+            .as_str(),
         "backup-round-trip-secret"
     );
 
@@ -1034,7 +1049,9 @@ fn test_backup_and_restore_cli_preserve_vault_and_reject_overwrite() -> MyResult
         assert_eq!(mode, 0o600);
     }
     assert_eq!(
-        find_and_decrypt("RustRover", &key, &restored_path)?.password,
+        find_and_decrypt("RustRover", &key, &restored_path)?
+            .password
+            .as_str(),
         "backup-round-trip-secret"
     );
 
@@ -1049,7 +1066,9 @@ fn test_backup_and_restore_cli_preserve_vault_and_reject_overwrite() -> MyResult
         .output()?;
     assert!(!overwrite.status.success());
     assert_eq!(
-        find_and_decrypt("RustRover", &key, &backup_path)?.password,
+        find_and_decrypt("RustRover", &key, &backup_path)?
+            .password
+            .as_str(),
         "backup-round-trip-secret"
     );
 
@@ -1064,7 +1083,9 @@ fn test_backup_and_restore_cli_preserve_vault_and_reject_overwrite() -> MyResult
         .output()?;
     assert!(!restore_overwrite.status.success());
     assert_eq!(
-        find_and_decrypt("RustRover", &key, &restored_path)?.password,
+        find_and_decrypt("RustRover", &key, &restored_path)?
+            .password
+            .as_str(),
         "backup-round-trip-secret"
     );
     Ok(())

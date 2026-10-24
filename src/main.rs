@@ -17,7 +17,7 @@ use pwd_manager::{
     },
     update_credential, upsert_credential,
 };
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 fn copy_to_clipboard(secret: &str) -> Result<(), UpstreamError> {
     #[cfg(target_os = "macos")]
@@ -211,14 +211,16 @@ fn run() -> Result<(), UpstreamError> {
                 let password = if reveal { &cred.password } else { "******" };
                 println!(
                     "Found credential for '{}': user={}, password={}",
-                    cred.account_name, cred.user_name, password
+                    cred.account_name.as_str(),
+                    cred.user_name.as_str(),
+                    password
                 );
 
                 if !cred.security_questions.is_empty() {
                     println!("Security questions:");
                     for q in &cred.security_questions {
                         let answer = if reveal { &q.answer } else { "******" };
-                        println!("  - {} = {}", q.question, answer);
+                        println!("  - {} = {}", q.question.as_str(), answer);
                     }
                 }
 
@@ -226,7 +228,7 @@ fn run() -> Result<(), UpstreamError> {
                     println!("Sub credentials:");
                     for s in &cred.sub_credentials {
                         let password = if reveal { &s.password } else { "******" };
-                        println!("  - {} = {}", s.cred_name, password);
+                        println!("  - {} = {}", s.cred_name.as_str(), password);
                     }
                 }
             }
