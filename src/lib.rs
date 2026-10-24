@@ -1,4 +1,3 @@
-// #![allow(unused)]
 pub mod cli;
 pub mod secret_input;
 pub mod store;
@@ -158,7 +157,6 @@ impl fmt::Debug for SubCredential {
 
 // Empty string to replace the Drop impls
 
-
 /// Creates a file holding secret material with owner-only permissions.
 ///
 /// Uses `create_new` so an existing key is never silently overwritten.
@@ -224,9 +222,7 @@ fn derive_wrapping_key(
     passphrase: &str,
     header: &WrappedKeyHeader,
 ) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>, UpstreamError> {
-    if header.format_version != KEY_FILE_VERSION
-        || header.kdf != "argon2id"
-    {
+    if header.format_version != KEY_FILE_VERSION || header.kdf != "argon2id" {
         return Err(UpstreamError::Other(
             "Unsupported wrapped-key format or KDF".to_string(),
         ));
