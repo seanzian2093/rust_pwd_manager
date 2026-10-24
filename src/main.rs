@@ -134,9 +134,9 @@ fn run() -> Result<(), UpstreamError> {
             };
 
             let cred = Credential {
-                account_name,
-                user_name,
-                password: password.to_string(),
+                account_name: Zeroizing::new(account_name.to_string()),
+                user_name: Zeroizing::new(user_name.to_string()),
+                password: Zeroizing::new(password.to_string()),
                 security_questions,
                 sub_credentials,
             };
@@ -194,15 +194,12 @@ fn run() -> Result<(), UpstreamError> {
             } else if json {
                 let mut output_cred = cred;
                 if !reveal {
-                    output_cred.password.zeroize();
-                    output_cred.password = "******".to_string();
+                    output_cred.password = Zeroizing::new("******".to_string());
                     for question in &mut output_cred.security_questions {
-                        question.answer.zeroize();
-                        question.answer = "******".to_string();
+                        question.answer = Zeroizing::new("******".to_string());
                     }
                     for sub_credential in &mut output_cred.sub_credentials {
-                        sub_credential.password.zeroize();
-                        sub_credential.password = "******".to_string();
+                        sub_credential.password = Zeroizing::new("******".to_string());
                     }
                 }
                 let rendered =
@@ -332,12 +329,10 @@ fn run() -> Result<(), UpstreamError> {
 
             update_credential(&input, &key, &account, |c| {
                 if let Some(u) = user_name {
-                    c.user_name.zeroize();
-                    c.user_name = u;
+                    c.user_name = Zeroizing::new(u.to_string());
                 }
                 if let Some(p) = password {
-                    c.password.zeroize();
-                    c.password = p.to_string();
+                    c.password = Zeroizing::new(p.to_string());
                 }
                 if !security_questions.is_empty() {
                     c.security_questions = security_questions;

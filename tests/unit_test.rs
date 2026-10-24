@@ -161,7 +161,19 @@ fn test_wrapped_key_rejects_tampered_kdf_parameters() -> MyResult {
     let (_dir, key_path, _) = temp_env();
     load_or_create_test_key(&key_path)?;
     let contents = std::fs::read_to_string(&key_path)?;
-    let tampered = contents.replace("\"memory_kib\":19456", "\"memory_kib\":19457");
+    let tampered = if let Some(pos) = contents.find("\"memory_kib\":") {
+        let start = pos + "\"memory_kib\":".len();
+        let mut bytes = contents.clone().into_bytes();
+        if let Some(digit_pos) = bytes[start..].iter().position(|b| b.is_ascii_digit()) {
+            let global_pos = start + digit_pos;
+            bytes[global_pos] = bytes[global_pos].wrapping_add(1);
+            String::from_utf8(bytes).unwrap()
+        } else {
+            contents.clone()
+        }
+    } else {
+        contents.clone()
+    };
     assert_ne!(tampered, contents);
     std::fs::write(&key_path, tampered)?;
     assert!(load_key_from(&key_path, TEST_MASTER_PASSPHRASE).is_err());
