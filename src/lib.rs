@@ -29,9 +29,9 @@ use zeroize::{Zeroize, Zeroizing};
 const NONCE_LEN: usize = 24;
 const WRAPPED_KEY_MAGIC: &str = "PWD_MANAGER_WRAPPED_KEY_V1\n";
 const KEY_FILE_VERSION: u32 = 1;
-const ARGON2_MEMORY_KIB: u32 = 19 * 1024;
-const ARGON2_ITERATIONS: u32 = 2;
-const ARGON2_PARALLELISM: u32 = 1;
+const ARGON2_MEMORY_KIB: u32 = 64 * 1024;
+const ARGON2_ITERATIONS: u32 = 3;
+const ARGON2_PARALLELISM: u32 = 4;
 const ARGON2_SALT_LEN: usize = 16;
 const DATA_KEY_LEN: usize = 32;
 
@@ -95,23 +95,23 @@ impl From<redb::Error> for UpstreamError {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Credential {
-    pub account_name: String,
-    pub user_name: String,
-    pub password: String,
+    pub account_name: Zeroizing<String>,
+    pub user_name: Zeroizing<String>,
+    pub password: Zeroizing<String>,
     pub security_questions: Vec<SecurityQuestion>,
     pub sub_credentials: Vec<SubCredential>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct SecurityQuestion {
-    pub question: String,
-    pub answer: String,
+    pub question: Zeroizing<String>,
+    pub answer: Zeroizing<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct SubCredential {
-    pub cred_name: String,
-    pub password: String,
+    pub cred_name: Zeroizing<String>,
+    pub password: Zeroizing<String>,
 }
 
 impl fmt::Debug for Credential {
@@ -156,27 +156,8 @@ impl fmt::Debug for SubCredential {
     }
 }
 
-impl Drop for Credential {
-    fn drop(&mut self) {
-        self.account_name.zeroize();
-        self.user_name.zeroize();
-        self.password.zeroize();
-    }
-}
+// Empty string to replace the Drop impls
 
-impl Drop for SecurityQuestion {
-    fn drop(&mut self) {
-        self.question.zeroize();
-        self.answer.zeroize();
-    }
-}
-
-impl Drop for SubCredential {
-    fn drop(&mut self) {
-        self.cred_name.zeroize();
-        self.password.zeroize();
-    }
-}
 
 /// Creates a file holding secret material with owner-only permissions.
 ///
@@ -245,12 +226,9 @@ fn derive_wrapping_key(
 ) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>, UpstreamError> {
     if header.format_version != KEY_FILE_VERSION
         || header.kdf != "argon2id"
-        || header.memory_kib != ARGON2_MEMORY_KIB
-        || header.iterations != ARGON2_ITERATIONS
-        || header.parallelism != ARGON2_PARALLELISM
     {
         return Err(UpstreamError::Other(
-            "Unsupported wrapped-key format or Argon2 parameters".to_string(),
+            "Unsupported wrapped-key format or KDF".to_string(),
         ));
     }
 
@@ -593,7 +571,7 @@ fn legacy_decrypt_security_question(
 
     Ok(SecurityQuestion {
         question: q.question.clone(),
-        answer: answer.to_string(),
+        answer,
     })
 }
 
@@ -606,7 +584,7 @@ fn legacy_decrypt_sub_credential(
 
     Ok(SubCredential {
         cred_name: s.cred_name.clone(),
-        password: password.to_string(),
+        password,
     })
 }
 
@@ -633,8 +611,8 @@ fn legacy_decrypt_cred(
 
     Ok(Credential {
         account_name: cred.account_name.clone(),
-        user_name: user_name.to_string(),
-        password: password.to_string(),
+        user_name,
+        password,
         security_questions,
         sub_credentials,
     })

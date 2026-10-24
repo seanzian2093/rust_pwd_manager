@@ -11,8 +11,8 @@ pub(crate) fn parse_security_question(s: &str) -> Result<SecurityQuestion, Strin
         return Err("QUESTION and ANSWER must be non-empty".to_string());
     }
     Ok(SecurityQuestion {
-        question: q.trim().to_string(),
-        answer: a.trim().to_string(),
+        question: q.trim().to_string().into(),
+        answer: a.trim().to_string().into(),
     })
 }
 
@@ -24,8 +24,8 @@ pub(crate) fn parse_sub_credential(s: &str) -> Result<SubCredential, String> {
         return Err("NAME and PASSWORD must be non-empty".to_string());
     }
     Ok(SubCredential {
-        cred_name: name.trim().to_string(),
-        password: pwd.trim().to_string(),
+        cred_name: name.trim().to_string().into(),
+        password: pwd.trim().to_string().into(),
     })
 }
 
