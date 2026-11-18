@@ -1,4 +1,3 @@
-// #![allow(unused)]
 pub mod cli;
 pub mod secret_input;
 pub mod store;
