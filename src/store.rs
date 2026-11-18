@@ -14,7 +14,9 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
+use redb::{
+    Database, ReadableDatabase, ReadableTable, TableDefinition, TableError, backends::FileBackend,
+};
 
 use crate::{UpstreamError, ensure_owner_only};
 
@@ -98,8 +100,8 @@ impl Store {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, UpstreamError> {
         let file = open_db_file(path.as_ref())?;
         let db = Database::builder()
-            .create_file(file)
-            .map_err(|e| UpstreamError::Store(e.into()))?;
+            .create_with_backend(FileBackend::new(file)?)
+            .map_err(UpstreamError::from)?;
         Ok(Store { db })
     }
 

@@ -93,6 +93,12 @@ impl From<redb::Error> for UpstreamError {
     }
 }
 
+impl From<redb::DatabaseError> for UpstreamError {
+    fn from(err: redb::DatabaseError) -> Self {
+        UpstreamError::Store(err.into())
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Credential {
     pub account_name: Zeroizing<String>,
@@ -157,7 +163,6 @@ impl fmt::Debug for SubCredential {
 }
 
 // Empty string to replace the Drop impls
-
 
 /// Creates a file holding secret material with owner-only permissions.
 ///
@@ -224,9 +229,7 @@ fn derive_wrapping_key(
     passphrase: &str,
     header: &WrappedKeyHeader,
 ) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>, UpstreamError> {
-    if header.format_version != KEY_FILE_VERSION
-        || header.kdf != "argon2id"
-    {
+    if header.format_version != KEY_FILE_VERSION || header.kdf != "argon2id" {
         return Err(UpstreamError::Other(
             "Unsupported wrapped-key format or KDF".to_string(),
         ));

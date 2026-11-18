@@ -82,7 +82,7 @@ fn test_credential_debug_redacts_secrets_and_identifiers() {
     };
 
     let debug = format!("{credential:?}");
-    assert!(debug.contains("visible-account"));
+    assert!(!debug.contains("visible-account"));
     for secret in [
         "private-username",
         "private-password",
